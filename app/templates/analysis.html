@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mindora — Mental Wellbeing Analysis</title>
+
+  <!-- Bootstrap CSS (adjust path if your project uses local files) -->
+  <link rel="stylesheet" href="/assets/vendor/bootstrap/css/bootstrap.min.css">
+
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    :root {
+      --bg: #f2f0ff;
+      --primary: #24365a; /* deep navy used for headings */
+      --accent: #0ea2bd;  /* brand accent (you can change) */
+      --muted: #6b7580;
+      --card: #ffffff;
+      --radius: 14px;
+      --shadow: 0 12px 30px rgba(20,30,60,0.07);
+    }
+
+    body {
+      background: var(--bg);
+      font-family: 'Poppins', system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+      color: #222;
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin-top: 36px;
+      margin-bottom: 60px;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    h1.h1-title {
+      color: var(--primary);
+      font-weight:700;
+      letter-spacing: -0.02em;
+      margin-bottom: 6px;
+    }
+
+    .small-muted {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .section-title {
+      font-weight:600;
+      color: var(--primary);
+      margin-bottom: 12px;
+    }
+
+    .question {
+      padding: 14px 0;
+      border-bottom: 1px solid #f1f1f6;
+    }
+
+    .likert .form-check {
+      display: inline-block;
+      margin-right: 8px;
+      margin-left: 4px;
+    }
+
+    .btn-primary {
+      background-color: var(--accent);
+      border-color: var(--accent);
+      box-shadow: none;
+    }
+
+    .loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(255,255,255,0.72);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius);
+      z-index: 10;
+    }
+
+    /* Report styling */
+    .pill {
+      display:inline-block;
+      padding:8px 14px;
+      border-radius: 999px;
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .card-report {
+      border-radius: 12px;
+      padding: 18px;
+      background: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .service-chip {
+      display:inline-block;
+      border-radius: 10px;
+      padding: 8px 12px;
+      background: #f4f8fb;
+      margin-right: 8px;
+      margin-bottom: 8px;
+      color: #234;
+      font-weight: 600;
+    }
+
+    /* responsive tweaks */
+    @media (max-width: 767px) {
+      .container { padding: 18px; }
+      .card { padding: 14px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+
+  <div class="card p-4 position-relative" id="analysis-card">
+    <h1 class="h1-title">Mental Wellbeing Analysis</h1>
+    <p class="small-muted mb-3">This assessment provides an evidence-based report for self-reflection. It is not a medical diagnosis. For urgent help contact a professional.</p>
+
+    <!-- Basic inputs -->
+    <div class="mb-3">
+      <div class="row g-2">
+        <div class="col-md-2">
+          <label class="form-label">Age</label>
+          <input id="age" type="number" min="10" max="120" class="form-control" placeholder="Age">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Gender</label>
+          <select id="gender" class="form-select">
+            <option value="">Prefer not to say</option>
+            <option value="female">Female</option>
+            <option value="male">Male</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Sleep (hours)</label>
+          <input id="sleep_hours" type="number" min="0" max="24" step="0.1" class="form-control" placeholder="e.g., 7.5">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Resting HR (optional)</label>
+          <input id="resting_hr" type="number" min="30" max="200" class="form-control" placeholder="bpm">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">User ID (optional)</label>
+          <input id="user_id" type="text" class="form-control" placeholder="u123">
+        </div>
+      </div>
+    </div>
+
+    <hr>
+
+    <!-- Questionnaire -->
+    <div id="questionnaire">
+      <h5 class="section-title">Please answer the following (1 = Strongly Disagree, 5 = Strongly Agree)</h5>
+      <div id="questions-list"></div>
+    </div>
+
+    <div class="d-flex justify-content-between align-items-center mt-3">
+      <div class="small-muted">Takes ~1–2 minutes.</div>
+      <div>
+        <button class="btn btn-outline-secondary me-2" id="reset-btn">Reset</button>
+        <button class="btn btn-primary" id="analyze-btn">Analyze & Generate Report</button>
+      </div>
+    </div>
+
+    <div class="loading-overlay d-none" id="loading-overlay">
+      <div class="text-center">
+        <div class="spinner-border text-primary" role="status" style="width:48px;height:48px"></div>
+        <div class="mt-2 text-muted">Generating personalized report…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Report area (hidden until returned) -->
+  <div id="report-section" style="display:none; margin-top: 22px;">
+    <div class="row g-3">
+      <div class="col-lg-8">
+        <div class="card-report">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <h4 id="report-title" style="margin:0;color:var(--primary)">Personalized Report</h4>
+              <div class="small-muted" id="report-sub">Interpreted by Mindora</div>
+            </div>
+            <div style="text-align:right">
+              <div id="severity-pill"></div>
+              <div class="small-muted" id="score-line" style="margin-top:8px"></div>
+            </div>
+          </div>
+
+          <div class="row g-3 mt-3">
+            <div class="col-md-6">
+              <canvas id="overallChart" height="200"></canvas>
+            </div>
+            <div class="col-md-6">
+              <canvas id="subscaleChart" height="200"></canvas>
+            </div>
+          </div>
+
+          <div class="mt-3">
+            <h6>Short Summary</h6>
+            <p id="short-summary" class="small-muted mb-2"></p>
+
+            <h6>Evidence</h6>
+            <ul id="evidence-list"></ul>
+
+            <h6>Immediate Actions</h6>
+            <ul id="actions-list"></ul>
+
+            <h6>Suggested Services</h6>
+            <div id="services-chips" class="mb-2"></div>
+
+            <div id="human-help" style="margin-top:12px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-4">
+        <div class="card-report">
+          <h6>Clinician Summary</h6>
+          <p id="clinician-summary" class="small-muted"></p>
+
+          <hr>
+
+          <h6>How we computed</h6>
+          <p class="small-muted" id="how-score"></p>
+
+          <hr>
+
+          <div id="cta-area"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ---------- Questions definition (10 items) ---------- */
+const QUESTIONS = [
+  { id: "q1", text: "I often feel overwhelmed by my daily responsibilities.", domain: "stress" },
+  { id: "q2", text: "I find it difficult to relax even when I have free time.", domain: "stress" },
+  { id: "q3", text: "I feel mentally exhausted at the end of most days.", domain: "stress" },
+
+  { id: "q4", text: "I frequently worry about things that are outside my control.", domain: "anxiety" },
+  { id: "q5", text: "I feel tense or restless without a clear reason.", domain: "anxiety" },
+  { id: "q6", text: "I find it hard to stop thinking about my concerns.", domain: "anxiety" },
+
+  { id: "q7", text: "I get irritated or frustrated more easily than I would like.", domain: "anger" },
+  { id: "q8", text: "Small issues sometimes trigger strong emotional reactions in me.", domain: "anger" },
+
+  { id: "q9", text: "I feel emotionally balanced in my daily life. (Reverse-scored)", domain: "wellbeing", reverse: true },
+  { id: "q10", text: "I feel optimistic about my future. (Reverse-scored)", domain: "wellbeing", reverse: true }
+];
+
+/* ---------- Render the questions HTML ---------- */
+function renderQuestions() {
+  const container = document.getElementById('questions-list');
+  container.innerHTML = '';
+  QUESTIONS.forEach((q, idx) => {
+    const block = document.createElement('div');
+    block.className = 'question';
+    block.innerHTML = `
+      <div class="d-flex justify-content-between align-items-start">
+        <div style="max-width:82%">
+          <strong>Q${idx+1}.</strong>
+          <span>${q.text}</span>
+        </div>
+        <div class="small-muted" style="min-width:72px;text-align:right">${q.domain}</div>
+      </div>
+      <div class="mt-2 likert" data-qid="${q.id}">
+        ${[1,2,3,4,5].map(v => `
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="radio" name="${q.id}" id="${q.id}-v${v}" value="${v}" ${v===3 ? 'checked' : ''}>
+            <label class="form-check-label small-muted" for="${q.id}-v${v}">${v}</label>
+          </div>`).join('')}
+      </div>
+    `;
+    container.appendChild(block);
+  });
+}
+renderQuestions();
+
+/* ---------- Helpers ---------- */
+function collectPayload() {
+  const user_id = document.getElementById('user_id').value || null;
+  const age = parseInt(document.getElementById('age').value) || null;
+  const gender = document.getElementById('gender').value || null;
+  const sleep_hours = (()=>{ const v = parseFloat(document.getElementById('sleep_hours').value); return isNaN(v)?null:v; })();
+  const resting_hr = (()=>{ const v = parseInt(document.getElementById('resting_hr').value); return isNaN(v)?null:v; })();
+
+  const answers = QUESTIONS.map(q => {
+    const radios = document.getElementsByName(q.id);
+    for (let r of radios) if (r.checked) return parseInt(r.value);
+    return 3;
+  });
+
+  return { user_id, age, gender, sleep_hours, resting_hr, answers };
+}
+
+function validatePayload(payload) {
+  if (!Array.isArray(payload.answers) || payload.answers.length !== QUESTIONS.length) return "Please answer all questions.";
+  if (payload.age !== null && (payload.age < 10 || payload.age > 120)) return "Please enter a valid age.";
+  if (payload.sleep_hours !== null && (payload.sleep_hours < 0 || payload.sleep_hours > 24)) return "Please enter valid sleep hours (0-24).";
+  return null;
+}
+
+function showLoading(on=true) {
+  const overlay = document.getElementById('loading-overlay');
+  if (on) overlay.classList.remove('d-none'); else overlay.classList.add('d-none');
+}
+
+/* ---------- Chart holders ---------- */
+let overallChart = null;
+let subscaleChart = null;
+
+function createCharts(overallPct, subscales) {
+  // overall donut
+  const ctx = document.getElementById('overallChart').getContext('2d');
+  if (overallChart) overallChart.destroy();
+  overallChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Score', 'Remaining'],
+      datasets: [{
+        data: [overallPct, 100 - overallPct],
+        backgroundColor: ['#ff7a66', '#eef3fb'],
+        borderWidth: 0
+      }]
+    },
+    options: {
+      cutout: '70%',
+      plugins: {
+        tooltip: { enabled:false },
+        legend: { display:false },
+        title: {
+          display: true,
+          text: overallPct + "%",
+          color: '#24365a',
+          font: { size: 18, weight:700 }
+        }
+      }
+    }
+  });
+
+  // subscale bar chart
+  const sCtx = document.getElementById('subscaleChart').getContext('2d');
+  if (subscaleChart) subscaleChart.destroy();
+  const labels = Object.keys(subscales);
+  const values = labels.map(k=>subscales[k]);
+  subscaleChart = new Chart(sCtx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Score',
+        data: values,
+        backgroundColor: ['#f39c12', '#e74c3c', '#9b59b6', '#2ecc71'],
+        borderRadius: 6
+      }]
+    },
+    options: {
+      plugins: { legend:{display:false} },
+      scales: { y: { beginAtZero:true } }
+    }
+  });
+}
+
+/* ---------- Render report UI from JSON ---------- */
+function renderReport(json) {
+  // expected fields per schema
+  const severity = json.severity || 'unknown';
+  const total_score = json.total_score ?? 0;
+  const total_pct = json.total_pct ?? 0;
+  const crisis_flag = json.crisis_flag || false;
+  const sub = json.subscales || {};
+  const evidence = json.evidence_points || [];
+  const short_summary = json.short_summary || '';
+  const clinician_summary = json.clinician_summary || '';
+  const recs = json.personalized_recommendations || { immediate_actions:[], suggested_services:[], human_help:false, call_to_action: '' };
+  const explain = (json.explainers && json.explainers.how_score_computed) ? json.explainers.how_score_computed : '';
+
+  // Header pill
+  const pill = document.getElementById('severity-pill');
+  let color = '#28a745';
+  if (severity === 'mild') color = '#ffc107';
+  if (severity === 'moderate') color = '#ff7a00';
+  if (severity === 'severe') color = '#dc3545';
+  pill.innerHTML = `<span class="pill" style="background:${color}">${severity.toUpperCase()}</span>`;
+
+  // score line and summary
+  document.getElementById('score-line').innerText = `Score: ${total_score} • ${total_pct}%`;
+  document.getElementById('short-summary').innerText = short_summary;
+  document.getElementById('clinician-summary').innerText = clinician_summary;
+  document.getElementById('how-score').innerText = explain;
+
+  // evidence
+  const evidEl = document.getElementById('evidence-list');
+  evidEl.innerHTML = evidence.map(e => `<li>${escapeHtml(e)}</li>`).join('');
+
+  // actions
+  const actionsEl = document.getElementById('actions-list');
+  actionsEl.innerHTML = (recs.immediate_actions || []).map(a => `<li>${escapeHtml(a)}</li>`).join('');
+
+  // services chips
+  const svcEl = document.getElementById('services-chips');
+  svcEl.innerHTML = '';
+  (recs.suggested_services || []).forEach(s => {
+    const chip = document.createElement('span');
+    chip.className = 'service-chip';
+    chip.innerText = s;
+    chip.onclick = () => {
+      // link to internal pages (adjust paths)
+      if (s.includes('Music')) location.href = 'music';
+      else if (s.includes('Quiz')) location.href = 'quizandgame';
+      else if (s.includes('Exercise')) location.href = 'exercises';
+    };
+    svcEl.appendChild(chip);
+  });
+
+  // human help CTA
+  const humanArea = document.getElementById('human-help');
+  const ctaArea = document.getElementById('cta-area');
+  humanArea.innerHTML = '';
+  ctaArea.innerHTML = '';
+
+  if (recs.human_help || crisis_flag) {
+    const html = `
+      <div style="padding:12px;background:#fff6f6;border-radius:8px;border:1px solid #ffd6d6">
+        <strong style="color:#b22222">Recommended: Connect with a human counselor</strong>
+        <p class="small-muted mb-1">${escapeHtml(recs.call_to_action || 'A trained counselor can help assess and plan next steps.')}</p>
+        <div>
+          <a class="btn btn-danger btn-sm" href="https://www.thelivelovelaughfoundation.org/helpline" style="margin-right:8px">Connect Now</a>
+          <a class="btn btn-outline-secondary btn-sm" href="/help">Local Helplines</a>
+        </div>
+      </div>`;
+    humanArea.innerHTML = html;
+    ctaArea.innerHTML = html;
+  } else {
+    // show quick action buttons for suggested services (if any)
+    if ((recs.suggested_services || []).length) {
+      ctaArea.innerHTML = `<h6>Try these features on Mindora</h6>` + (recs.suggested_services || []).map(s => {
+        const href = s.includes('Music') ? '/music' : s.includes('Quiz') ? 'quizandgame' : '/exercises';
+        return `<div style="margin-bottom:8px"><a class="btn btn-outline-primary btn-sm" href="${href}">Open ${escapeHtml(s)}</a></div>`;
+      }).join('');
+    }
+  }
+
+  // Create charts
+  createCharts(total_pct, sub);
+
+  // show report area
+  document.getElementById('report-section').style.display = 'block';
+  // scroll to report
+  window.scrollTo({ top: document.getElementById('report-section').offsetTop - 12, behavior: 'smooth' });
+}
+
+/* ---------- Utilities ---------- */
+function escapeHtml(unsafe) {
+  if (!unsafe) return '';
+  return String(unsafe).replace(/[&<"'>]/g, function(m) {
+    return ({ '&': '&amp;', '<': '&lt;', '>':'&gt;', '"': '&quot;', "'": '&#039;' })[m];
+  });
+}
+
+/* ---------- Event handlers ---------- */
+document.getElementById('reset-btn').addEventListener('click', () => {
+  document.getElementById('age').value = '';
+  document.getElementById('gender').value = '';
+  document.getElementById('sleep_hours').value = '';
+  document.getElementById('resting_hr').value = '';
+  document.getElementById('user_id').value = '';
+  QUESTIONS.forEach(q => { const e = document.getElementById(q.id + '-v3'); if (e) e.checked = true; });
+  document.getElementById('report-section').style.display = 'none';
+});
+
+document.getElementById('analyze-btn').addEventListener('click', async () => {
+  const payload = collectPayload();
+  const v = validatePayload(payload);
+  if (v) { alert(v); return; }
+  showLoading(true);
+
+  try {
+    const res = await fetch('/analysis', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    showLoading(false);
+
+    if (!res.ok) {
+      console.error('Server error', data);
+      alert('Server error: ' + (data.error || 'Unknown'));
+      return;
+    }
+
+    // Render the report UI from JSON
+    renderReport(data);
+
+  } catch(err) {
+    showLoading(false);
+    console.error(err);
+    alert('Network or server error. Check console for details.');
+  }
+});
+
+</script>
+</body>
+</html>
