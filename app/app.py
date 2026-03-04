@@ -19,9 +19,9 @@ import plotly
 import plotly.express as px
 import plotly.graph_objs as go
 from google import genai
+import os
 
-
-
+API_KEY = os.getenv(GEMINI_API_KEY)
 client = genai.Client(api_key="AIzaSyAqCUPvtv7ocdNRcQHFnTuzzbX_rAzC2Uk")
 model = pickle.load(open('stresslevel.pkl', 'rb'))
 #creation of the Flask Application named as "app"
