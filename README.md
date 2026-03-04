@@ -108,23 +108,25 @@ This allows the system to be rebuilt quickly in the event of hardware or OS fail
 
 # Repository Structure
 
+```
 mindora-infrastructure
-├── app
 │
-├── docs
-│ └── architecture.md
+├── app                     # Flask application
 │
-├── infra
-│ ├── docker
-│ │ └── Dockerfile
-│ │
-│ └── compose
-│ └── docker-compose.prod.yml
+├── docs                    # Architecture documentation
+│   └── architecture.md
 │
-├── README.md
-├── ROADMAP.md
-├── LICENSE
-
+├── infra                   # Infrastructure configuration
+│   ├── docker              # Container build configuration
+│   │   └── Dockerfile
+│   │
+│   └── compose             # Deployment orchestration
+│       └── docker-compose.prod.yml
+│
+├── README.md               # Project overview
+├── ROADMAP.md              # Planned infrastructure improvements
+└── LICENSE
+```
 
 ---
 
