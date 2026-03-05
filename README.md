@@ -86,7 +86,7 @@ This allows secure public access without exposing the internal network.
 
 Public endpoint:
 
-mindora.pratiktayde.com
+[https://mindora.pratiktayde.com](https://mindora.pratiktayde.com)
 
 ---
 
@@ -162,7 +162,7 @@ Planned improvements include:
 
 Full roadmap available in:
 
-ROADMAP.md
+[View the Roadmap](./ROADMAP.md)
 
 ---
 
