@@ -21,7 +21,9 @@ import plotly.graph_objs as go
 from google import genai
 import os
 
-API_KEY = os.getenv(GEMINI_API_KEY)
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    raise RuntimeError("GEMINI_API_KEY environment variable not set")
 client = genai.Client(api_key="AIzaSyAqCUPvtv7ocdNRcQHFnTuzzbX_rAzC2Uk")
 model = pickle.load(open('stresslevel.pkl', 'rb'))
 #creation of the Flask Application named as "app"
