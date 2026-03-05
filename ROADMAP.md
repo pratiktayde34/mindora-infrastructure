@@ -14,35 +14,46 @@ The roadmap therefore evolves the system through layers of **networking, reliabi
 
 ---
 
-# Current Architecture (Baseline)
+## Current Architecture (Baseline)
 
 Mindora is currently deployed using a **self-hosted on-premise infrastructure**.
 
-Architecture:
+### Architecture
 
-User
-↓
-Cloudflare DNS
-↓
-Cloudflare Tunnel (CGNAT bypass)
-↓
-TrueNAS On-Prem Server
-↓
-Docker Runtime
-↓
+User  
+↓  
+Cloudflare DNS  
+↓  
+Cloudflare Tunnel (CGNAT bypass)  
+↓  
+TrueNAS On-Prem Server  
+↓  
+Docker Runtime  
+↓  
 Flask Application Container (Gunicorn)
 
-Infrastructure characteristics:
+### Infrastructure Characteristics
 
-• On-premise deployment
-• ZFS storage with redundancy
-• Containerized application runtime
-• Secure inbound connectivity via Cloudflare Tunnel
-• Docker image registry via Docker Hub
-• Environment variable based secret management
-• Manual image build → push → pull deployment pipeline
+- On-premise deployment
+- ZFS storage with redundancy
+- Containerized application runtime
+- Secure inbound connectivity via Cloudflare Tunnel
+- Docker image registry via Docker Hub
+- Environment variable–based secret management
 
-This deployment is considered **Version 1: Baseline Container Deployment**.
+### Current Deployment Pipeline
+
+Local Development Machine  
+↓  
+Docker Build  
+↓  
+Docker Push → Docker Hub  
+↓  
+TrueNAS pulls latest image  
+↓  
+Docker Compose updates container  
+
+This deployment is considered **Version 1 — Baseline Container Deployment**.
 
 ---
 
