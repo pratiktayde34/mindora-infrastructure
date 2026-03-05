@@ -40,19 +40,24 @@ The focus of this repository is **infrastructure architecture**, not application
 # Architecture Overview
 
 The system currently follows this architecture:
-
+```
 User
-→ Cloudflare Edge Network  
-→ Cloudflare Tunnel  
-→ On-Premise TrueNAS Server  
-→ Docker Network  
-→ Flask Application Container
-
+ ↓
+Cloudflare Edge Network  
+ ↓
+Cloudflare Tunnel 
+ ↓ 
+On-Premise TrueNAS Server  
+ ↓
+Docker Network  
+ ↓
+Flask Application Container
+```
 Cloudflare handles TLS termination and edge routing while the application remains hosted inside the private network.
 
 Detailed architecture documentation can be found here:
 
-docs/architecture.md
+[Architecture Documentation](./ARCHITECTURE.md)
 
 ---
 
