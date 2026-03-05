@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     expose:
       - "5000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     networks:
       - appnet
 
