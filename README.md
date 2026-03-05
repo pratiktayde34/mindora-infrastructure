@@ -8,6 +8,14 @@ The system is currently deployed on an on-premise TrueNAS server and exposed sec
 
 ---
 
+## Quick Links
+
+- 🌐 **Live Deployment:** [mindora.pratiktayde.com](https://mindora.pratiktayde.com)
+- 🏗 **Architecture Documentation:** [ARCHITECTURE.md](./ARCHITECTURE.md)
+- 🗺 **Infrastructure Roadmap:** [ROADMAP.md](./ROADMAP.md)
+
+---
+
 # Project Overview
 
 Mindora is a Flask-based web application deployed using a containerized infrastructure stack.
