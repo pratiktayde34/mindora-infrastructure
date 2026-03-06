@@ -4,412 +4,355 @@ This document defines the **long-term infrastructure evolution plan** for the Mi
 
 The purpose of this project is **not application development**, but the systematic development of **production-grade infrastructure thinking** through incremental architectural evolution.
 
-Each version milestone represents a **meaningful infrastructure capability upgrade**, not minor configuration changes.
+> "A complex system that works is invariably found to have evolved from a simple system that worked." — John Gall
 
-The project follows a foundational systems engineering principle:
-
-“A complex system that works is invariably found to have evolved from a simple system that worked.” — John Gall
-
-The roadmap therefore evolves the system through layers of **networking, reliability, security, automation, and observability**.
+Each version milestone represents a **meaningful infrastructure capability upgrade** — not a minor configuration change.
 
 ---
 
-## Current Architecture (Baseline)
+## Milestone Summary
 
-Mindora is currently deployed using a **self-hosted on-premise infrastructure**.
+| Version | Focus Area | Key Technology | Status |
+|---|---|---|---|
+| v1 | Baseline container deployment | Docker, Gunicorn, Cloudflare Tunnel | ✅ Complete |
+| v2 | Reverse proxy architecture | Nginx | 🔲 Planned |
+| v3 | Infrastructure observability | Prometheus, Grafana, cAdvisor | 🔲 Planned |
+| v4 | Deployment automation | GitHub Actions, CI/CD | 🔲 Planned |
+| v5 | Persistent storage architecture | ZFS volumes, Docker mounts | 🔲 Planned |
+| v6 | Security hardening | Network isolation, rate limiting | 🔲 Planned |
+| v7 | Cloud deployment replication | VPS, Cloudflare DNS | 🔲 Planned |
+| v8 | Infrastructure as Code | Provisioning scripts | 🔲 Planned |
+| v9 | Advanced experiments | Orchestration, service mesh | 🔲 Planned |
 
-### Architecture
+---
 
-User  
-↓  
-Cloudflare DNS  
-↓  
-Cloudflare Tunnel (CGNAT bypass)  
-↓  
-TrueNAS On-Prem Server  
-↓  
-Docker Runtime  
-↓  
+## Current Architecture — v1 Baseline
+
+**Architecture:**
+
+```
+User
+ ↓
+Cloudflare DNS + WAF
+ ↓
+Cloudflare Tunnel (CGNAT bypass)
+ ↓
+TrueNAS On-Prem Server
+ ↓
+Docker Runtime
+ ↓
 Flask Application Container (Gunicorn)
+```
 
-### Infrastructure Characteristics
+**Current capabilities:**
 
-- On-premise deployment
-- ZFS storage with redundancy
-- Containerized application runtime
+- On-premise deployment on TrueNAS SCALE
+- ZFS storage with mirrored pool and snapshot scheduling
+- Containerised application runtime with Docker Compose
 - Secure inbound connectivity via Cloudflare Tunnel
-- Docker image registry via Docker Hub
+- Container image registry via Docker Hub
 - Environment variable–based secret management
 
-### Current Deployment Pipeline
+**Current deployment pipeline:**
 
-Local Development Machine  
-↓  
-Docker Build  
-↓  
-Docker Push → Docker Hub  
-↓  
-TrueNAS pulls latest image  
-↓  
-Docker Compose updates container  
+```
+Local Machine → docker build → docker push → TrueNAS pull → docker compose up
+```
 
-This deployment is considered **Version 1 — Baseline Container Deployment**.
+Full architecture detail: [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
 
-# Version 2 — Reverse Proxy Architecture
+## Version 2 — Reverse Proxy Architecture
 
-## Objective
+**Objective:** Introduce a dedicated reverse proxy layer to separate traffic routing from application execution.
 
-Introduce a dedicated **reverse proxy layer** to separate traffic routing from application execution.
+**Architecture change:**
 
-This reflects the standard architecture used in production container environments.
+```
+[Before]  Cloudflare Tunnel → mindora container
 
-## Architecture
+[After]   Cloudflare Tunnel → Nginx container → mindora container
+```
 
-User
-↓
-Cloudflare DNS
-↓
-Cloudflare Tunnel
-↓
-Nginx Reverse Proxy Container
-↓
-Flask Application Container
+**What this enables:**
 
-## Capabilities Introduced
+- Clean separation between routing logic and application logic
+- Foundation for load balancing and multi-service routing in future versions
+- Proper proxy header handling (`X-Forwarded-For`, `X-Real-IP`)
+- Request buffering and timeout control at the edge of the stack
 
-• Layered request routing
-• Reverse proxy traffic handling
-• Separation of routing and application responsibilities
-• Future compatibility with load balancing and scaling
+**Implementation tasks:**
 
-## Implementation Tasks
+- Add Nginx container to Compose stack
+- Remove direct exposure of application container
+- Route all HTTP traffic through Nginx
+- Configure proxy headers, request timeouts, and buffer settings
 
-• Add Nginx container to compose stack
-• Configure internal container networking
-• Route HTTP traffic through Nginx
-• Remove direct exposure of application container
-• Implement proper proxy headers
-• Configure request buffering and timeout settings
+**Deliverables:**
 
-## Deliverables
-
-• nginx configuration
-• updated docker-compose architecture
-• architecture documentation update
+- `nginx.conf`
+- Updated `docker-compose.yml`
+- Updated `ARCHITECTURE.md`
 
 ---
 
-# Version 3 — Infrastructure Observability
+## Version 3 — Infrastructure Observability
 
-## Objective
+**Objective:** Introduce system visibility through metrics collection and dashboards. Running infrastructure without observability means operating blind.
 
-Introduce system visibility through **metrics and monitoring infrastructure**.
+**Architecture additions:**
 
-Operating infrastructure without observability prevents reliable operations.
+```
+Prometheus (metrics store)
+    ├── Node Exporter     (host system metrics)
+    └── cAdvisor          (container resource metrics)
 
-## Architecture Additions
+Grafana (dashboards and visualisation)
+```
 
-Prometheus
-Grafana
-Node Exporter
-cAdvisor
+**What this enables:**
 
-## Architecture
+- Real-time visibility into CPU, memory, disk IO, and network throughput
+- Per-container resource consumption tracking
+- Container restart event detection
+- Foundation for alerting in future versions
 
-User
-↓
-Cloudflare
-↓
-Tunnel
-↓
-Reverse Proxy
-↓
-Application Containers
+**Dashboard targets:**
 
-Monitoring Stack
+- Host CPU and memory utilisation
+- Container restart frequency
+- Disk IO per pool
+- Network throughput
 
-Prometheus
-↓
-Metrics Collection
-↓
-Grafana Dashboards
+**Deliverables:**
 
-## Capabilities Introduced
-
-• Host system monitoring
-• Container resource monitoring
-• Performance visibility
-• Operational dashboards
-
-## Implementation Tasks
-
-• Deploy Prometheus metrics collector
-• Deploy Node Exporter for host metrics
-• Deploy cAdvisor for container metrics
-• Deploy Grafana for visualization
-• Create dashboards for:
-
-CPU usage
-memory usage
-container restart events
-disk IO
-network throughput
-
-## Deliverables
-
-• Prometheus configuration
-• Grafana dashboards
-• monitoring documentation
+- `prometheus.yml` configuration
+- Grafana dashboard exports (JSON)
+- Monitoring architecture documentation
 
 ---
 
-# Version 4 — Deployment Automation
+## Version 4 — Deployment Automation
 
-## Objective
+**Objective:** Replace the manual build and deploy process with a fully automated CI/CD pipeline.
 
-Replace the manual deployment process with a **fully automated build and deployment pipeline**.
+**Current pipeline:**
 
-## Current Deployment
+```
+Developer machine → docker build → docker push → NAS pull → container restart
+```
 
-Developer machine
-↓
-Docker build
-↓
-Docker push
-↓
-NAS pull
-↓
-Container restart
+**Target pipeline:**
 
-## Target Deployment
+```
+git push → GitHub Actions → docker build → push to registry → SSH deploy → containers updated
+```
 
-Git push
-↓
-CI pipeline builds container
-↓
-Image pushed to registry
-↓
-Server automatically pulls latest image
-↓
-Containers redeployed
+**What this enables:**
 
-## Capabilities Introduced
+- Every code change triggers a verified, consistent build
+- No manual steps between code change and deployed state
+- Deployment history and rollback capability via image tags
 
-• Continuous Integration
-• Automated image builds
-• Deployment consistency
-• Reduced operational friction
+**Implementation tasks:**
 
-## Implementation Tasks
+- GitHub Actions workflow for Docker build and push
+- Secure SSH-based deployment to TrueNAS host
+- Automated container update trigger on new image push
+- Optionally: automated rollback on health check failure
 
-• Implement GitHub Actions workflow
-• Automate Docker image builds
-• Automate registry publishing
-• Secure automated SSH deployment
-• Implement automated container updates
+**Deliverables:**
 
-## Deliverables
-
-• CI pipeline configuration
-• automated build logs
-• deployment documentation
+- `.github/workflows/deploy.yml`
+- SSH key configuration for deployment
+- CI/CD documentation
 
 ---
 
-# Version 5 — Persistent Storage Architecture
+## Version 5 — Persistent Storage Architecture
 
-## Objective
+**Objective:** Separate application runtime state from the container lifecycle, enabling durable storage that survives container restarts and redeployments.
 
-Separate application runtime from persistent state.
+**Architecture change:**
 
-The current system treats application data as ephemeral container state.
+```
+[Before]  Application state lives inside the container (ephemeral)
 
-This version introduces **durable storage architecture**.
+[After]   Application Container
+              ↓
+          Mounted Docker volume
+              ↓
+          Dedicated ZFS dataset (apps/volumes/)
+```
 
-## Architecture
+**What this enables:**
 
-Application Container
-↓
-Mounted Persistent Volume
-↓
-ZFS Dataset
+- Application data persists across container restarts and image updates
+- Snapshot-based recovery for application state (databases, uploads)
+- Clear separation between immutable application code and mutable data
 
-## Capabilities Introduced
+**Implementation tasks:**
 
-• Durable application state
-• Storage lifecycle management
-• Data protection via ZFS snapshots
+- Create dedicated ZFS datasets under `apps/volumes/`
+- Mount volumes into the container via Compose
+- Configure snapshot schedules on data volumes
+- Validate data persistence across full container teardown and rebuild
+- Define backup policy to `tank/backups/`
 
-## Implementation Tasks
+**Deliverables:**
 
-• Create dedicated dataset for application data
-• Mount persistent storage into container runtime
-• Configure snapshot schedules
-• Validate persistence across container restarts
-• Implement backup policy
-
-## Deliverables
-
-• persistent storage configuration
-• storage architecture documentation
-
----
-
-# Version 6 — Infrastructure Security
-
-## Objective
-
-Introduce security hardening across the infrastructure stack.
-
-## Capabilities Introduced
-
-• network isolation
-• hardened container runtime
-• traffic filtering
-• request rate control
-
-## Implementation Tasks
-
-• isolate container networks
-• restrict exposed services
-• implement reverse proxy rate limiting
-• configure Cloudflare security rules
-• audit container privileges
-• reduce container attack surface
-
-## Deliverables
-
-• security architecture documentation
-• hardened network configuration
+- Updated `docker-compose.yml` with volume mounts
+- ZFS dataset configuration
+- Storage architecture documentation
 
 ---
 
-# Version 7 — Cloud Deployment Replication
+## Version 6 — Infrastructure Security
 
-## Objective
+**Objective:** Harden the infrastructure stack across network isolation, container runtime, and traffic filtering.
 
-Deploy the same architecture on public cloud infrastructure to compare **on-prem vs cloud deployment characteristics**.
+**What this enables:**
 
-## Architecture
+- Reduced attack surface across the container stack
+- Network segmentation between services
+- Rate limiting and request filtering at the proxy layer
+- Principle of least privilege applied to container configuration
 
+**Implementation tasks:**
+
+- Isolate container networks (separate networks per service tier)
+- Remove unnecessary container capabilities
+- Configure Nginx rate limiting
+- Audit and tighten Cloudflare WAF rules
+- Restrict inter-container communication to required paths only
+- Add container resource limits (CPU, memory)
+
+**Deliverables:**
+
+- Hardened `docker-compose.yml`
+- Updated Nginx configuration with rate limiting
+- Security architecture documentation
+
+---
+
+## Version 7 — Cloud Deployment Replication
+
+**Objective:** Deploy the same architecture on a public cloud VPS to compare on-premises and cloud deployment characteristics.
+
+**Architecture:**
+
+```
 Internet
-↓
+ ↓
 Cloudflare DNS
-↓
-VPS Public IP
-↓
-Reverse Proxy
-↓
+ ↓
+VPS Public IP (firewall rules)
+ ↓
+Nginx Reverse Proxy
+ ↓
 Application Containers
+```
 
-## Capabilities Introduced
+**What this enables:**
 
-• public cloud deployment
-• firewall configuration
-• infrastructure portability
+- Direct comparison of on-prem vs cloud deployment
+- Infrastructure portability validation — the same Compose stack deploys to both environments
+- Experience with cloud-native networking and firewall configuration
 
-## Implementation Tasks
+**Implementation tasks:**
 
-• provision VPS environment
-• configure firewall rules
-• deploy container stack
-• document deployment differences
-• compare latency and reliability characteristics
+- Provision a VPS (DigitalOcean, Hetzner, or similar)
+- Configure firewall rules (allow 80/443 only)
+- Deploy the same container stack
+- Document differences in setup, networking, and operational behaviour
 
-## Deliverables
+**Deliverables:**
 
-• cloud deployment documentation
-• architecture comparison analysis
-
----
-
-# Version 8 — Infrastructure as Code
-
-## Objective
-
-Convert infrastructure configuration into **reproducible code**.
-
-Infrastructure should be reproducible, not manually configured.
-
-## Capabilities Introduced
-
-• repeatable deployments
-• version-controlled infrastructure
-• automated provisioning
-
-## Implementation Tasks
-
-• document infrastructure setup
-• automate provisioning steps
-• introduce infrastructure automation tools
-• build reproducible deployment workflows
-
-## Deliverables
-
-• infrastructure provisioning scripts
-• automated deployment documentation
+- Cloud deployment documentation
+- On-prem vs cloud comparison analysis
 
 ---
 
-# Version 9 — Advanced Infrastructure Experiments
+## Version 8 — Infrastructure as Code
 
-## Objective
+**Objective:** Convert manual infrastructure configuration steps into reproducible, version-controlled scripts.
 
-Explore advanced distributed infrastructure patterns.
+**What this enables:**
 
-These experiments expand infrastructure understanding beyond single-node deployments.
+- Full infrastructure can be reproduced from scratch automatically
+- No undocumented manual steps
+- Infrastructure state is auditable via version control
 
-## Areas of Exploration
+**Implementation tasks:**
 
-• container orchestration systems
-• distributed service discovery
-• service mesh networking
-• large-scale monitoring pipelines
-• failure injection testing
-• multi-region failover architecture
+- Document every manual setup step currently required
+- Replace manual steps with provisioning scripts or IaC tooling
+- Build and test a full reprovisioning workflow from a clean state
 
-These experiments are intended for **learning and architectural exploration**, not production deployment.
+**Deliverables:**
 
----
-
-# Development Principles
-
-This project follows several infrastructure engineering principles:
-
-• stability before complexity
-• separation of concerns
-• observability as a requirement
-• automation over manual processes
-• infrastructure documented alongside implementation
+- Provisioning scripts
+- IaC configuration files
+- Reprovisioning runbook
 
 ---
 
-# Documentation Requirements
+## Version 9 — Advanced Infrastructure Experiments
 
-Every architecture upgrade must update:
+**Objective:** Explore distributed infrastructure patterns beyond single-node deployments.
 
-README.md
-ARCHITECTURE.md
-CHANGELOG.md
+These are learning-oriented experiments, not production deployments.
+
+**Areas of exploration:**
+
+- Container orchestration systems (Kubernetes, Nomad)
+- Distributed service discovery
+- Service mesh networking (mTLS, traffic policies)
+- Large-scale observability pipelines
+- Failure injection and chaos testing
+- Multi-region failover architecture
+
+---
+
+## Development Principles
+
+This project follows these infrastructure engineering principles:
+
+- **Stability before complexity** — each version builds on a working foundation
+- **Separation of concerns** — routing, application, storage, and monitoring are distinct layers
+- **Observability as a requirement** — visibility is not optional
+- **Automation over manual processes** — if it's done twice, it should be scripted
+- **Documentation alongside implementation** — architecture docs are updated with every version
+
+---
+
+## Documentation Requirements
+
+Every version milestone must update the following before being considered complete:
+
+- [ ] `README.md` — project overview and component table
+- [ ] `ARCHITECTURE.md` — updated diagrams and component descriptions
+- [ ] `ROADMAP.md` — milestone status updated
+- [ ] `CHANGELOG.md` — new version entry added
 
 Each version must include:
 
-• architecture diagram
-• explanation of architectural changes
-• operational considerations
+- Architecture diagram reflecting the new state
+- Explanation of what changed and why
+- Any operational considerations introduced by the change
 
 ---
 
-# Long Term Goal
+## Long-Term Goal
 
-By the final stages, the repository should demonstrate:
+By the final stages, this repository should demonstrate:
 
-• real infrastructure deployment experience
-• container networking expertise
-• automated deployment pipelines
-• monitoring and observability infrastructure
-• secure system design
+- Real infrastructure deployment experience across on-prem and cloud environments
+- Container networking and reverse proxy expertise
+- Automated CI/CD deployment pipelines
+- Monitoring and observability infrastructure
+- Secure, hardened system design
+- Reproducible infrastructure via code
 
-The project is intended to function as a **public infrastructure case study** rather than a simple application repository.
+The project is intended as a **public infrastructure case study** — demonstrating the progression from a minimal working system to a production-grade deployment architecture.

@@ -1,79 +1,86 @@
-# Mindora Infrastructure — v1 Baseline Deployment
+# Mindora Infrastructure — Architecture Documentation
+
+**Version:** v1 — Baseline Container Deployment  
+
+---
+
+## Table of Contents
+
+- [Mindora Infrastructure — Architecture Documentation](#mindora-infrastructure--architecture-documentation)
+  - [Table of Contents](#table-of-contents)
+  - [Overview](#overview)
+  - [Hardware Layout](#hardware-layout)
+  - [Storage Architecture](#storage-architecture)
+    - [Data Pool — `tank`](#data-pool--tank)
+    - [Applications Pool — `apps`](#applications-pool--apps)
+  - [Data Integrity and Reliability](#data-integrity-and-reliability)
+    - [ZFS Snapshots](#zfs-snapshots)
+    - [ZFS Scrub Schedule](#zfs-scrub-schedule)
+    - [SMART Monitoring](#smart-monitoring)
+  - [Recovery and Rebuild Strategy](#recovery-and-rebuild-strategy)
+    - [TrueNAS Configuration Backup](#truenas-configuration-backup)
+    - [Application Data Replication](#application-data-replication)
+  - [Container Runtime Environment](#container-runtime-environment)
+  - [Domain and DNS Configuration](#domain-and-dns-configuration)
+  - [Application Containerisation](#application-containerisation)
+  - [Container Build and Distribution](#container-build-and-distribution)
+  - [Container Orchestration](#container-orchestration)
+  - [Public Exposure via Cloudflare Tunnel](#public-exposure-via-cloudflare-tunnel)
+  - [End-to-End Traffic Flow](#end-to-end-traffic-flow)
+  - [Baseline Architecture Diagram](#baseline-architecture-diagram)
+  - [Architectural Decisions](#architectural-decisions)
+    - [Cloudflare Tunnel over VPS-based exposure](#cloudflare-tunnel-over-vps-based-exposure)
+    - [Separate ZFS pools for `tank` and `apps`](#separate-zfs-pools-for-tank-and-apps)
+    - [Gunicorn over Flask development server](#gunicorn-over-flask-development-server)
+    - [Docker Compose over manual `docker run`](#docker-compose-over-manual-docker-run)
+    - [Docker Hub over self-hosted registry](#docker-hub-over-self-hosted-registry)
+  - [Current Limitations](#current-limitations)
+
+---
 
 ## Overview
 
-This document describes the baseline deployment architecture for **Mindora**, a containerized Flask service hosted on an on-premise TrueNAS SCALE server operating behind CGNAT.
+Mindora is a containerised Flask service running on a self-hosted TrueNAS SCALE node behind CGNAT. The deployment is intentionally minimal — v1 exists to establish a stable, reproducible foundation before introducing additional infrastructure layers.
 
-The purpose of this project is not application development but the exploration of **practical infrastructure and deployment patterns**. The system is intentionally designed to evolve incrementally — beginning with a minimal functional architecture and gradually introducing more advanced infrastructure layers.
+The constraints that shaped this architecture are real: no public IP at the router level, on-premise hardware with independent failure domains, and a requirement for the system to be fully recoverable without manual reconstruction. Every architectural decision in this document traces back to one of those constraints.
 
-The current state represents **Version 1 — Baseline Container Deployment**, focused on establishing:
-
-- reliable service execution
-- controlled public exposure
-- reproducible container deployments
-- resilient on-prem infrastructure
-
-Future iterations will extend the system with additional architectural layers including reverse proxy separation, observability infrastructure, automated deployments, and cloud replication.
+Future iterations are documented in [ROADMAP.md](./ROADMAP.md).
 
 ---
 
-# Infrastructure Environment
+## Hardware Layout
 
-The service runs on a self-hosted infrastructure node powered by **TrueNAS SCALE**, which serves as the container host and storage platform.
-
-The environment was designed with the following operational priorities:
-
-- long-term storage reliability
-- infrastructure recoverability
-- separation of runtime and persistent storage
-- proactive disk health monitoring
-
-The system implements multiple layers of redundancy and integrity verification to reduce the risk of data loss and to simplify recovery in the event of hardware failure.
-
----
-
-# Hardware Layout
-
-The system separates the operating system, persistent storage, and application workloads across dedicated devices.
-
-This separation prevents application workloads from interfering with storage operations and simplifies recovery procedures.
+Three devices, three distinct roles — OS, persistent storage, and application workloads are separated to eliminate IO contention and create independent failure domains.
 
 ```
 TrueNAS Host
 │
 ├── Boot Device
-│ └── SSD (TrueNAS Operating System)
+│   └── SSD — TrueNAS OS
 │
 ├── Data Pool (tank)
-│ ├── HDD 1
-│ └── HDD 2
+│   ├── HDD 1 ─┐
+│   └── HDD 2 ─┴─ ZFS mirror
 │
 └── Applications Pool (apps)
-└── Dedicated SSD
+    └── SSD — container workloads
 ```
 
+| Device | Pool | Workload |
+|---|---|---|
+| Boot SSD | — | TrueNAS OS only |
+| HDD 1 + HDD 2 | `tank` | Persistent data, SMB shares, backups |
+| Apps SSD | `apps` | Container images, volumes, runtime state |
 
-Key design goals:
-
-- isolate OS from runtime workloads
-- isolate application workloads from persistent storage
-- maintain high reliability for critical data
+The separation between `tank` and `apps` is a deliberate design choice — covered in [Architectural Decisions](#architectural-decisions).
 
 ---
 
-# Storage Architecture
+## Storage Architecture
 
-## Data Pool — `tank`
+### Data Pool — `tank`
 
-The primary storage pool is configured as a **ZFS mirrored pool across two HDDs**.
-
-Purpose:
-
-- persistent storage
-- SMB shares
-- backup destination for application data
-
-Dataset layout:
+ZFS mirror across two HDDs. Tolerates single-disk failure with no service interruption.
 
 ```
 tank/
@@ -82,213 +89,106 @@ tank/
 └── backups/
 ```
 
+`tank` is the durability layer. Application runtime data is periodically replicated here from the SSD pool.
 
-Characteristics:
+### Applications Pool — `apps`
 
-- mirrored disk configuration
-- protection against single disk failure
-- uninterrupted operation during disk replacement
-
-If one disk fails, the mirror continues serving data while the failed drive can be replaced without downtime.
-
----
-
-## Applications Pool — `apps`
-
-Application workloads are isolated onto a **dedicated SSD-based ZFS pool**.
-
-Purpose:
-
-- host container runtime workloads
-- provide high-performance IO for containers
-- isolate application IO from persistent storage IO
-
-Dataset layout:
+Dedicated SSD-backed ZFS pool for container workloads.
 
 ```
 apps/
-├── compose/
-└── volumes/
+├── compose/    ← orchestration definitions
+└── volumes/    ← persistent runtime state
 ```
 
-
-**compose/**  
-Stores container orchestration definitions such as Docker Compose files and service configuration.
-
-**volumes/**  
-Reserved for persistent runtime data including databases, application state, and uploaded files.
+The SSD backing provides the IO throughput container workloads require, while ZFS gives the same integrity guarantees as the HDD pool — checksumming, snapshot capability, and scrub support.
 
 ---
 
-# Data Integrity and Reliability
+## Data Integrity and Reliability
 
-The infrastructure relies heavily on **ZFS integrity mechanisms and hardware diagnostics**.
+### ZFS Snapshots
 
-## ZFS Snapshots
+Periodic snapshots are scheduled on datasets. The primary use case is recovery from application-layer mistakes — bad deploys, accidental data deletion, configuration errors — rather than hardware failure, which the mirror handles.
 
-Periodic snapshots are configured on datasets to allow **point-in-time recovery**.
+Retention policies are configured per dataset based on how frequently the data changes and how far back recovery needs to be possible.
 
-Snapshots allow recovery from:
+### ZFS Scrub Schedule
 
-- accidental deletion
-- configuration mistakes
-- corrupted application state
+Regular scrubs run across both pools. On the mirrored `tank` pool, any checksum mismatch triggers automatic correction from the redundant copy. The scrub schedule is the early warning system for latent disk degradation before it becomes data loss.
 
-Snapshots make it possible to restore previous dataset states quickly.
+### SMART Monitoring
 
----
+Short and extended SMART tests are scheduled on all drives. The goal is detecting early degradation indicators — reallocated sectors, pending sectors, read error rates — with enough lead time to order a replacement before failure.
 
-## ZFS Scrub Operations
-
-Scheduled **ZFS scrub tasks** verify the integrity of stored data.
-
-Scrubbing performs:
-
-- block-level checksum validation
-- detection of silent data corruption
-- automatic correction using mirrored disk data
-
-Regular scrub operations ensure latent storage errors are detected and corrected early.
+| Test | Schedule |
+|---|---|
+| Short | Frequent — quick health check |
+| Extended | Periodic — full surface scan |
 
 ---
 
-## SMART Disk Monitoring
+## Recovery and Rebuild Strategy
 
-All storage devices are monitored through **SMART diagnostics**.
+The system is designed around a single principle: recovery should require no manual reconstruction from memory.
 
-Scheduled tests include:
+### TrueNAS Configuration Backup
 
-- short SMART tests
-- extended SMART tests
+TrueNAS configuration exports include pool definitions, dataset structure, network config, users, permissions, and container runtime state. These are stored in external cloud storage.
 
-These tests monitor indicators such as:
+**Boot SSD failure recovery:**
 
-- bad sector development
-- disk degradation
-- read/write error rates
-- early hardware failure signals
+```
+1. Install TrueNAS on replacement drive
+2. Import existing ZFS pools — data is intact on the disks
+3. Restore configuration backup
+```
 
-This monitoring allows failing disks to be replaced proactively.
+The ZFS pools survive independently of the OS drive. The configuration backup restores everything else.
+
+### Application Data Replication
+
+```
+apps/volumes/  →  replicated to  →  tank/backups/
+(SSD — runtime performance)         (HDD mirror — durability)
+```
+
+SSD failure does not affect `tank`. Application data is restored from the HDD-backed replica and the stack is redeployed from the same image on Docker Hub.
 
 ---
 
-# Recovery and Rebuild Strategy
+## Container Runtime Environment
 
-The infrastructure is designed so that **complete system recovery can be performed quickly without manual reconstruction**.
+TrueNAS SCALE runs a Docker-compatible runtime. When `apps` is assigned as the application pool, TrueNAS provisions `/mnt/.ix-apps` on that dataset for container images, layers, and metadata.
 
-## TrueNAS Configuration Backup
+```
+Storage driver:       overlay2
+Backing filesystem:   ZFS
+```
 
-TrueNAS allows exporting the full system configuration as a backup file.
-
-The configuration backup includes:
-
-- storage pool definitions
-- dataset structure
-- network configuration
-- system users and permissions
-- container runtime configuration
-
-Configuration backups are stored externally in cloud storage.
-
-If the boot SSD fails:
-
-1. Install TrueNAS on a replacement drive  
-2. Import the existing ZFS pools  
-3. Restore the configuration backup  
-
-The system will return to the exact same operational state.
+Container storage inherits ZFS checksumming — silent corruption in image layers is detectable at the storage level.
 
 ---
 
-## Application Data Protection
+## Domain and DNS Configuration
 
-Application runtime workloads operate on the SSD-based `apps` pool, while critical data is backed up to the mirrored HDD pool.
+Domain `pratiktayde.com` is registered through Cloudflare Registrar. All DNS is managed through Cloudflare, keeping edge services — WAF, tunnel routing, CDN — consolidated under one control plane.
 
-Example backup flow:
+| Service | Role in this architecture |
+|---|---|
+| DNS | Resolution and subdomain routing |
+| WAF | Edge-level request filtering |
+| Tunnel | Inbound ingress without open router ports |
 
-```
-apps/volumes/
-↓
-replicated to
-↓
-tank/backups/
-```
-
-
-This architecture combines:
-
-- **SSD performance for application runtime**
-- **HDD redundancy for long-term durability**
-
-If the SSD fails, the system can be rebuilt and application data restored from the mirrored HDD pool.
+Public endpoint: `mindora.pratiktayde.com`
 
 ---
 
-# Container Runtime Environment
+## Application Containerisation
 
-Container workloads run on **TrueNAS SCALE's Docker runtime environment**.
+The application runs under Gunicorn inside a Python slim container. Worth noting: `expose` is used rather than `ports` — the container is intentionally not bound to the host network. All inbound traffic arrives through the tunnel connector on the internal Docker network.
 
-When the applications pool is assigned for container workloads, TrueNAS automatically provisions an internal dataset:
-
-```
-/mnt/.ix-apps
-```
-
-This dataset stores:
-
-- container images
-- container layers
-- container metadata
-- runtime state
-
-Container storage configuration:
-
-```
-Storage driver: overlay2
-Backing filesystem: ZFS
-```
-
-
-This allows container storage to inherit the integrity guarantees of ZFS.
-
----
-
-# Domain and DNS Configuration
-
-The public domain is registered through **Cloudflare Registrar**.
-
-```
-pratiktayde.com
-```
-
-
-Cloudflare manages DNS and edge network functionality.
-
-Cloudflare services used in this architecture:
-
-- DNS resolution
-- CDN edge routing
-- Web Application Firewall
-- Cloudflare Tunnel ingress
-
-The service is exposed via the subdomain:
-
-```
-mindora.pratiktayde.com
-```
-
-
----
-
-# Application Containerization
-
-The application itself is a Flask service.
-
-The Flask development server (`flask run`) is not suitable for production environments, so the application is served using **Gunicorn**, a production-grade WSGI server.
-
-Example Dockerfile:
-
-```
+```dockerfile
 FROM python:3.9-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -301,7 +201,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app/requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ /app
@@ -311,103 +210,40 @@ EXPOSE 5000
 CMD ["gunicorn", "-b", "0.0.0.0:5000", "app:app"]
 ```
 
-
-Gunicorn provides:
-
-- multi-worker request handling
-- stable process management
-- production-grade HTTP serving
-
 ---
 
-# Container Image Build Process
+## Container Build and Distribution
 
-The container image is built locally before deployment.
+Build pipeline at v1 is manual. Each step is run locally — automated in v4.
 
-```
+```bash
+# Build and validate locally before pushing
 docker build -t mindora:test .
-```
-
-Image verification:
-
-```
-docker images  
-```
-
----
-
-# Local Container Validation
-
-Before publishing the image, the container is tested locally.
-
-```
 docker run -p 5000:5000 mindora:test
-```
 
-This verifies that the containerized application executes correctly.
-
----
-
-# Container Registry
-
-A Docker Hub repository is used as the container registry.
-
-```
-pratiktayde/mindora
-```
-
-Authentication is performed using the Docker CLI:
-
-```
-docker login
-```
-
----
-
-# Image Distribution
-
-The built container image is tagged and pushed to Docker Hub.
-
-```
+# Tag and distribute
 docker tag mindora:test pratiktayde/mindora:test
-```
-```
 docker push pratiktayde/mindora:test
-```
 
-This allows remote hosts to pull the container image.
-
----
-
-# Deployment to TrueNAS
-
-The NAS pulls the container image from Docker Hub.
-
-```
+# Deploy on TrueNAS
 docker pull pratiktayde/mindora:test
+docker compose up -d
 ```
 
-Image verification:
-
-```
-docker images
-```
+Registry: `pratiktayde/mindora` on Docker Hub.
 
 ---
 
-# Container Orchestration
+## Container Orchestration
 
-Manual container execution was replaced with **Docker Compose**, allowing declarative infrastructure definitions.
-
-Compose files are stored at:
+Both containers share a single bridge network — `cloudflared` reaches `mindora` by container name via Docker DNS over that network.
 
 ```
-/mnt/apps/compose/mindora
+Repo:      infra/compose/docker-compose.prod.yml
+TrueNAS:   /mnt/apps/compose/mindora/
 ```
 
-Example configuration:
-
-```
+```yaml
 services:
   mindora:
     image: pratiktayde/mindora:test
@@ -435,107 +271,131 @@ networks:
     driver: bridge
 ```
 
-Deployment command:
-
-```
-docker compose up -d
-```
-
-Container verification:
-
-```
-docker ps 
-```
+Secrets are injected via `.env` at runtime — not stored in the Compose file or committed to version control.
 
 ---
 
-# Public Exposure via Cloudflare Tunnel
+## Public Exposure via Cloudflare Tunnel
 
-The NAS operates behind **Carrier-Grade NAT**, which prevents inbound port forwarding.
+The host operates behind CGNAT — no publicly routable IP exists at the router level, making inbound port forwarding impossible without an intermediary.
 
-To expose the service securely without opening router ports, the system uses **Cloudflare Tunnel**, which creates an outbound-initiated connection from the NAS to Cloudflare's edge network.
+The tunnel connector runs as a container on the same bridge network as the application. It establishes an outbound connection to Cloudflare's edge, which Cloudflare uses to route inbound requests back to the service. The router has no open ports.
+
+```
+Tunnel name:   mindora-tunnel
+Hostname:      mindora.pratiktayde.com
+Service URL:   mindora:5000
+```
+
+`cloudflared` resolves `mindora` by Docker DNS — both containers on `appnet`, container name as the upstream service URL.
 
 ---
 
-# Tunnel Configuration
-
-A tunnel was created in Cloudflare Zero Trust:
-
-```
-mindora-tunnel
-```
-
-Tunnel type:
-
-```
-cloudflared
-```
-
-Cloudflare provides an authentication token used by the cloudflared container.
-
----
-
-# Public Hostname Routing
-
-Cloudflare routing configuration:
-
-```
-Hostname: mindora.pratiktayde.com
-Service Type: HTTP
-Service URL: mindora:5000
-```
-
-Incoming requests are forwarded to the container through the internal Docker network.
-
----
-
-# Traffic Flow
+## End-to-End Traffic Flow
 
 ```
 User
-↓
-Cloudflare Edge
-↓
-Cloudflare Tunnel
-↓
+  ↓
+Cloudflare Edge — DNS resolution, TLS termination, WAF
+  ↓
+Cloudflare Tunnel — encrypted, outbound-initiated
+  ↓
 cloudflared container
-↓
-Docker network
-↓
-mindora container
+  ↓
+Docker bridge network (appnet)
+  ↓
+mindora container — Gunicorn → Flask :5000
+```
+
+TLS terminates at Cloudflare. Traffic between `cloudflared` and `mindora` is internal to the Docker bridge — HTTP only, never exposed outside the host.
+
+---
+
+## Baseline Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   Public Internet                   │
+│                                                     │
+│   User ──► Cloudflare Edge (DNS + TLS + WAF)        │
+└────────────────────────┬────────────────────────────┘
+                         │ Cloudflare Tunnel
+                         │ (outbound-initiated, no open ports)
+┌────────────────────────▼────────────────────────────┐
+│               TrueNAS SCALE Host                    │
+│                                                     │
+│   ┌─────────────────────────────────────────┐       │
+│   │         Docker Bridge (appnet)          │       │
+│   │                                         │       │
+│   │  ┌──────────────┐  ┌─────────────────┐  │       │
+│   │  │  cloudflared │─►│    mindora      │  │       │
+│   │  │              │  │  Gunicorn :5000 │  │       │
+│   │  └──────────────┘  └─────────────────┘  │       │
+│   └─────────────────────────────────────────┘       │
+│                                                     │
+│   ┌──────────────────┐  ┌──────────────────┐        │
+│   │   tank (mirror)  │  │   apps (SSD)     │        │
+│   │   HDD 1 + HDD 2  │  │   overlay2 + ZFS │        │
+│   └──────────────────┘  └──────────────────┘        │
+└─────────────────────────────────────────────────────┘
 ```
 
 ---
 
-# Baseline Architecture (v1)
+## Architectural Decisions
 
-```
-User
-↓
-Cloudflare (DNS + TLS + WAF)
-↓
-Cloudflare Tunnel
-↓
-TrueNAS Host
-↓
-Docker Network
-↓
-Flask Application (Gunicorn)
-```
+### Cloudflare Tunnel over VPS-based exposure
+
+The server operates behind CGNAT — the ISP assigns a single public IP shared across multiple customers, making traditional inbound port forwarding impossible at the router level.
+
+The obvious workaround is a VPS with a public IP acting as a reverse proxy or jump host. Cloudflare Tunnel was chosen instead because it solves the ingress problem without introducing a separate node to operate. The `cloudflared` container maintains the outbound connection to Cloudflare's edge; Cloudflare handles the public-facing side. No additional infrastructure, no additional failure point.
+
+The trade-off is a hard dependency on Cloudflare for all inbound traffic — if Cloudflare is down, the service is unreachable regardless of host health. That's an acceptable trade at this scale given what comes included: TLS termination, WAF, DDoS mitigation, and DNS under one control plane. A direct VPS deployment is planned for v7 specifically to compare both approaches with real operational experience behind each.
 
 ---
 
-# Current Limitations
+### Separate ZFS pools for `tank` and `apps`
 
-The baseline deployment intentionally remains minimal and does not yet include:
+A single pool could host both workloads. The separation exists for two reasons.
 
-- reverse proxy separation
-- container privilege hardening
-- container health checks
-- resource limits
-- CI/CD automation
-- observability stack
-- multi-node orchestration
-- cloud deployment replication
+First, IO isolation. Container workloads are bursty — image pulls, overlay operations, and application IO can all spike simultaneously. Colocating that on the same pool as long-term storage creates contention and makes per-pool health harder to reason about independently.
 
-These improvements will be introduced progressively in future iterations.
+Second, failure domain separation. A failing HDD in the `tank` mirror has zero impact on application availability — the `apps` SSD continues operating. Conversely, an SSD failure takes down the container runtime but leaves persistent data on `tank` completely intact. Recovery is clean and scoped: rebuild the apps pool, restore from backup, redeploy.
+
+---
+
+### Gunicorn over Flask development server
+
+The Flask dev server is single-process and explicitly documented as unsafe for production. Gunicorn was the only reasonable choice for a containerised deployment — multi-worker process model, proper signal handling, and request queuing without blocking. It's a single line change in the Dockerfile with a meaningful operational difference in how the process behaves under concurrent load and on worker failure.
+
+---
+
+### Docker Compose over manual `docker run`
+
+The initial deployment used `docker run` directly. The problem is that the infrastructure state lives in shell history rather than version control. Compose defines the full service configuration — image, environment, network membership, restart policy — in a file that is reproducible exactly on any host. As the stack grows across versions, every new service gets the same treatment automatically.
+
+---
+
+### Docker Hub over self-hosted registry
+
+Running a registry on the NAS was considered. Docker Hub was chosen at this stage because operating a registry adds a service to maintain, monitor, and back up — scope not justified when the goal is establishing a clean build-and-deploy pipeline. This gets revisited if the CI/CD pipeline in v4 hits pull rate limits or if a private registry becomes a security requirement.
+
+---
+
+## Current Limitations
+
+This baseline is intentionally minimal. The following are known gaps, each with a planned resolution:
+
+| Limitation | Planned Resolution |
+|---|---|
+| No reverse proxy layer | v2 — Nginx |
+| No metrics or dashboards | v3 — Prometheus + Grafana |
+| No CI/CD pipeline | v4 — GitHub Actions |
+| No persistent volume mounts | v5 — Storage Architecture |
+| No container privilege hardening | v6 — Security |
+| No container health checks | v6 — Security |
+| No resource limits on containers | v6 — Security |
+| No cloud deployment | v7 — Cloud Replication |
+| No infrastructure as code | v8 — IaC |
+
+See [ROADMAP.md](./ROADMAP.md) for full detail on each milestone.

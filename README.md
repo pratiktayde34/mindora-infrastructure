@@ -1,10 +1,29 @@
 # Mindora Infrastructure
 
+![Status](https://img.shields.io/badge/status-active-brightgreen)
+![Version](https://img.shields.io/badge/version-v1--baseline-blue)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
+
 Infrastructure architecture and deployment configuration for the Mindora application.
 
-This repository documents the containerized deployment, networking architecture, and on-premise infrastructure used to run the Mindora service.
+This repository documents the containerized deployment, networking architecture, and on-premise infrastructure used to run the Mindora service. The system is currently deployed on a self-hosted TrueNAS server and exposed securely to the internet using Cloudflare Tunnel.
 
-The system is currently deployed on an on-premise TrueNAS server and exposed securely to the internet using Cloudflare Tunnel.
+> **Focus:** This repository is about **infrastructure architecture**, not application development. The Flask app is the workload — the infrastructure is the subject.
+
+---
+
+## Table of Contents
+
+- [Quick Links](#quick-links)
+- [Project Overview](#project-overview)
+- [Architecture Overview](#architecture-overview)
+- [Infrastructure Components](#infrastructure-components)
+- [Repository Structure](#repository-structure)
+- [Prerequisites](#prerequisites)
+- [Deployment Strategy](#deployment-strategy)
+- [Roadmap](#roadmap)
+- [Goals of This Repository](#goals-of-this-repository)
+- [License](#license)
 
 ---
 
@@ -13,186 +32,197 @@ The system is currently deployed on an on-premise TrueNAS server and exposed sec
 - 🌐 **Live Deployment:** [mindora.pratiktayde.com](https://mindora.pratiktayde.com)
 - 🏗 **Architecture Documentation:** [ARCHITECTURE.md](./ARCHITECTURE.md)
 - 🗺 **Infrastructure Roadmap:** [ROADMAP.md](./ROADMAP.md)
+- 📋 **Changelog:** [CHANGELOG.md](./CHANGELOG.md)
 
 ---
 
-# Project Overview
+## Project Overview
 
-Mindora is a Flask-based web application deployed using a containerized infrastructure stack.
-
-The goal of this repository is to document the infrastructure architecture used to deploy the application in a production-aware environment.
+Mindora is a Flask-based web application deployed using a production-oriented containerized infrastructure stack.
 
 Key characteristics of the system:
 
-- Containerized application deployment using Docker
+- Containerized application deployment using Docker and Gunicorn
 - Infrastructure orchestration using Docker Compose
-- Secure internet exposure using Cloudflare Tunnel
-- On-premise hosting using TrueNAS
-- Resilient storage using ZFS pools with redundancy
-- Snapshot-based rollback and system configuration backups
+- Secure internet exposure using Cloudflare Tunnel (CGNAT bypass)
+- On-premise hosting using TrueNAS SCALE
+- Resilient ZFS storage with mirrored pools and snapshot scheduling
+- System configuration backups for rapid rebuild capability
 - Disk health monitoring via SMART tests
 - Periodic ZFS scrub tasks for data integrity verification
 
-The focus of this repository is **infrastructure architecture**, not application development.
-
 ---
 
-# Architecture Overview
+## Architecture Overview
 
-The system currently follows this architecture:
 ```
 User
  ↓
-Cloudflare Edge Network  
+Cloudflare Edge (DNS + TLS + WAF)
  ↓
-Cloudflare Tunnel 
- ↓ 
-On-Premise TrueNAS Server  
+Cloudflare Tunnel
  ↓
-Docker Network  
+On-Premise TrueNAS Server
  ↓
-Flask Application Container
+Docker Bridge Network
+ ↓
+Flask Application Container (Gunicorn)
 ```
-Cloudflare handles TLS termination and edge routing while the application remains hosted inside the private network.
 
-Detailed architecture documentation can be found here:
+Cloudflare handles TLS termination and edge routing. The application remains entirely within the private network — no ports are exposed on the router.
 
-[Architecture Documentation](./ARCHITECTURE.md)
-
----
-
-# Infrastructure Components
-
-## Application Container
-
-The application runs inside a Docker container built from a Python slim base image.
-
-The container runs the Flask application using a WSGI server and exposes the service internally on port 5000.
-
-The container is not directly exposed to the public internet.
+Full architecture documentation: [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
 
-## Docker Compose Deployment
+## Infrastructure Components
 
-Deployment is orchestrated using Docker Compose.
+### Application Container
+
+The Flask application runs inside a Docker container built from a Python slim base image, served by Gunicorn. It is not directly exposed to the public internet — all traffic arrives through the Cloudflare Tunnel connector.
+
+Internal port: `5000`
+
+---
+
+### Docker Compose Deployment
 
 The compose stack currently includes:
 
-- Mindora application container
-- Cloudflare tunnel connector container
-- Internal Docker bridge network
+- **mindora** — Flask application container (Gunicorn)
+- **cloudflared** — Cloudflare Tunnel connector
+- **appnet** — Internal Docker bridge network
 
-Compose configuration is located in:
-
-infra/compose/docker-compose.prod.yml
-
----
-
-## Cloudflare Tunnel
-
-Because the server operates behind CGNAT, inbound port forwarding is not possible.
-
-Cloudflare Tunnel is used to establish an outbound encrypted connection from the server to Cloudflare's edge network.
-
-This allows secure public access without exposing the internal network.
-
-Public endpoint:
-
-[https://mindora.pratiktayde.com](https://mindora.pratiktayde.com)
-
----
-
-## On-Premise Infrastructure
-
-The system runs on a dedicated TrueNAS server configured for reliability and data protection.
-
-Key features of the infrastructure:
-
-- ZFS storage pools with redundancy
-- Periodic ZFS scrub tasks to verify data integrity
-- SMART disk health monitoring
-- Snapshot scheduling for rollback capability
-- Configuration backups stored off-system for rebuild scenarios
-
-This allows the system to be rebuilt quickly in the event of hardware or OS failure.
-
----
-
-# Repository Structure
+Compose configuration (repo):
 
 ```
-mindora-infrastructure
+infra/compose/docker-compose.prod.yml
+```
+
+Deployed location on TrueNAS:
+
+```
+/mnt/apps/compose/mindora/
+```
+
+---
+
+### Cloudflare Tunnel
+
+Because the server operates behind CGNAT, inbound port forwarding is not possible. Cloudflare Tunnel establishes an outbound encrypted connection from the server to Cloudflare's edge — enabling secure public access without exposing the internal network.
+
+Public endpoint: [https://mindora.pratiktayde.com](https://mindora.pratiktayde.com)
+
+---
+
+### On-Premise Infrastructure
+
+The system runs on a dedicated TrueNAS SCALE server with:
+
+| Feature | Detail |
+|---|---|
+| OS pool | Dedicated boot SSD |
+| Data pool (`tank`) | ZFS mirror across 2 HDDs |
+| Apps pool (`apps`) | Dedicated SSD |
+| Snapshots | Periodic, per-dataset |
+| Scrub schedule | Regular integrity verification |
+| SMART monitoring | Short + extended tests scheduled |
+| Config backup | Exported to cloud storage |
+
+---
+
+## Repository Structure
+
+```
+mindora-infrastructure/
 │
-├── app                     # Flask application
+├── app/                          # Flask application source
 │
-├── docs                    # Architecture documentation
-│   └── architecture.md
-│
-├── infra                   # Infrastructure configuration
-│   ├── docker              # Container build configuration
-│   │   └── Dockerfile
-│   │
-│   └── compose             # Deployment orchestration
+├── infra/
+│   ├── docker/
+│   │   └── Dockerfile            # Container build definition
+│   └── compose/
 │       └── docker-compose.prod.yml
 │
-├── README.md               # Project overview
-├── ROADMAP.md              # Planned infrastructure improvements
+├── README.md                     # Project overview (this file)
+├── ARCHITECTURE.md               # Full infrastructure architecture
+├── ROADMAP.md                    # Planned infrastructure milestones
+├── CHANGELOG.md                  # Version history and architectural changes
 └── LICENSE
 ```
 
 ---
 
-# Deployment Strategy
+## Prerequisites
 
-Current deployment model:
+To build and deploy this project, the following are required:
 
-Local build → Docker Hub → On-Premise Deployment
+- Docker and Docker Compose installed on the build machine
+- A Docker Hub account (or alternative registry)
+- TrueNAS SCALE host with Docker runtime enabled
+- Cloudflare account with Zero Trust tunnel configured
+- Domain registered and DNS managed through Cloudflare
 
-Deployment steps:
+Secrets are managed via environment variables. A `.env` file is required at deploy time:
 
-1. Build container image locally
-2. Push image to Docker Hub
-3. Pull image on the TrueNAS host
-4. Deploy containers using Docker Compose
+```
+GEMINI_API_KEY=your_key_here
+TUNNEL_TOKEN=your_tunnel_token_here
+```
 
-Future iterations will introduce CI/CD automation.
-
----
-
-# Roadmap
-
-The infrastructure will evolve in multiple phases.
-
-Planned improvements include:
-
-- Reverse proxy layer (Nginx)
-- Container health checks
-- Improved container isolation
-- CI/CD pipeline using GitHub Actions
-- Migration to VPS-based deployment for comparison
-- Infrastructure observability improvements
-
-Full roadmap available in:
-
-[View the Roadmap](./ROADMAP.md)
+> Do not commit `.env` to version control.
 
 ---
 
-# Goals of This Repository
+## Deployment Strategy
 
-This repository exists to demonstrate the evolution of a real infrastructure deployment.
+Current model: **Local build → Docker Hub → On-Premise pull**
+
+```
+1. docker build -t pratiktayde/mindora:test .
+2. docker push pratiktayde/mindora:test
+3. [On TrueNAS] docker pull pratiktayde/mindora:test
+4. docker compose up -d
+```
+
+Future iterations will replace this with a CI/CD pipeline via GitHub Actions. See [ROADMAP.md](./ROADMAP.md) — Version 4.
+
+---
+
+## Roadmap
+
+The infrastructure will evolve through the following major milestones:
+
+| Version | Focus | Status |
+|---|---|---|
+| v1 | Baseline container deployment | ✅ Complete |
+| v2 | Reverse proxy (Nginx) | 🔲 Planned |
+| v3 | Observability (Prometheus + Grafana) | 🔲 Planned |
+| v4 | CI/CD automation (GitHub Actions) | 🔲 Planned |
+| v5 | Persistent storage architecture | 🔲 Planned |
+| v6 | Security hardening | 🔲 Planned |
+| v7 | Cloud deployment replication | 🔲 Planned |
+| v8 | Infrastructure as Code | 🔲 Planned |
+| v9 | Advanced experiments | 🔲 Planned |
+
+Full detail: [ROADMAP.md](./ROADMAP.md)
+
+---
+
+## Goals of This Repository
+
+This repository exists to demonstrate the **systematic evolution of a real infrastructure deployment** — from a minimal working baseline toward a production-grade system.
 
 The focus is on:
 
-- Containerization
-- Deployment architecture
-- Infrastructure reliability
-- System design thinking
+- Containerisation and WSGI production serving
+- Deployment architecture and networking
+- Storage reliability and data integrity
+- System design thinking applied to real constraints (CGNAT, on-prem hardware)
 - Production-oriented engineering practices
 
 ---
 
-# License
+## License
 
 MIT License
