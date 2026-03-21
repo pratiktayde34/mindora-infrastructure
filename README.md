@@ -1,7 +1,7 @@
 # Mindora Infrastructure
 
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
-![Version](https://img.shields.io/badge/version-v1--baseline-blue)
+![Version](https://img.shields.io/badge/version-v2--reverse--proxy-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 Infrastructure architecture and deployment configuration for the Mindora application.
@@ -14,16 +14,22 @@ This repository documents the containerized deployment, networking architecture,
 
 ## Table of Contents
 
-- [Quick Links](#quick-links)
-- [Project Overview](#project-overview)
-- [Architecture Overview](#architecture-overview)
-- [Infrastructure Components](#infrastructure-components)
-- [Repository Structure](#repository-structure)
-- [Prerequisites](#prerequisites)
-- [Deployment Strategy](#deployment-strategy)
-- [Roadmap](#roadmap)
-- [Goals of This Repository](#goals-of-this-repository)
-- [License](#license)
+- [Mindora Infrastructure](#mindora-infrastructure)
+  - [Table of Contents](#table-of-contents)
+  - [Quick Links](#quick-links)
+  - [Project Overview](#project-overview)
+  - [Architecture Overview](#architecture-overview)
+  - [Infrastructure Components](#infrastructure-components)
+    - [Application Container](#application-container)
+    - [Docker Compose Deployment](#docker-compose-deployment)
+    - [Cloudflare Tunnel](#cloudflare-tunnel)
+    - [On-Premise Infrastructure](#on-premise-infrastructure)
+  - [Repository Structure](#repository-structure)
+  - [Prerequisites](#prerequisites)
+  - [Deployment Strategy](#deployment-strategy)
+  - [Roadmap](#roadmap)
+  - [Goals of This Repository](#goals-of-this-repository)
+  - [License](#license)
 
 ---
 
@@ -66,6 +72,8 @@ On-Premise TrueNAS Server
  ↓
 Docker Bridge Network
  ↓
+Nginx Reverse Proxy
+ ↓
 Flask Application Container (Gunicorn)
 ```
 
@@ -90,6 +98,7 @@ Internal port: `5000`
 The compose stack currently includes:
 
 - **mindora** — Flask application container (Gunicorn)
+- **nginx** — Reverse proxy container
 - **cloudflared** — Cloudflare Tunnel connector
 - **appnet** — Internal Docker bridge network
 
@@ -142,7 +151,9 @@ mindora-infrastructure/
 │   ├── docker/
 │   │   └── Dockerfile            # Container build definition
 │   └── compose/
-│       └── docker-compose.prod.yml
+│       ├── docker-compose.prod.yml
+│       └── nginx/
+│           └── nginx.conf        # Nginx reverse proxy configuration
 │
 ├── README.md                     # Project overview (this file)
 ├── ARCHITECTURE.md               # Full infrastructure architecture
@@ -196,7 +207,7 @@ The infrastructure will evolve through the following major milestones:
 | Version | Focus | Status |
 |---|---|---|
 | v1 | Baseline container deployment | ✅ Complete |
-| v2 | Reverse proxy (Nginx) | 🔲 Planned |
+| v2 | Reverse proxy (Nginx) | ✅ Complete |
 | v3 | Observability (Prometheus + Grafana) | 🔲 Planned |
 | v4 | CI/CD automation (GitHub Actions) | 🔲 Planned |
 | v5 | Persistent storage architecture | 🔲 Planned |
