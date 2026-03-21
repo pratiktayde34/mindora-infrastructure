@@ -6,6 +6,40 @@ Each entry corresponds to a version milestone defined in [ROADMAP.md](./ROADMAP.
 
 ---
 
+## [v2.0.0] — Reverse Proxy Architecture
+
+**Status:** Complete
+
+### What changed
+
+Introduced Nginx as a dedicated reverse proxy container sitting between the Cloudflare Tunnel connector and the application container. The Cloudflare Tunnel service URL was updated from `mindora:5000` to `nginx:80`.
+
+### Infrastructure introduced
+
+- **Nginx** reverse proxy container running `nginx:alpine` on the Docker bridge network
+- **nginx.conf** — server block with proxy pass and proxy header configuration
+- **`depends_on`** — Nginx waits for mindora to start before accepting traffic
+
+### What changed in the stack
+
+```
+[Before]  cloudflared → mindora:5000
+
+[After]   cloudflared → nginx:80 → mindora:5000
+```
+
+### Key architectural decision
+
+Nginx introduces a routing layer that decouples the tunnel connector from the application. At single-service scale the immediate value is low — the real value compounds in v6 (rate limiting, security headers) and v7 (multi-service routing on VPS). The pattern is established now so those layers have somewhere to land.
+
+Full reasoning documented in [ARCHITECTURE.md — Architectural Decisions](./ARCHITECTURE.md#architectural-decisions).
+
+### What was intentionally deferred
+
+Observability, CI/CD automation, persistent volume mounts, security hardening, and cloud deployment remain out of scope. Each is addressed in subsequent versions. See [ROADMAP.md](./ROADMAP.md).
+
+---
+
 ## [v1.0.0] — Baseline Container Deployment
 
 **Status:** Complete
