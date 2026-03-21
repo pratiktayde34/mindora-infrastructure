@@ -1,6 +1,8 @@
 # Mindora Infrastructure — Architecture Documentation
 
-**Version:** v1 — Baseline Container Deployment  
+**Version:** v2 — Reverse Proxy Architecture  
+**Last Updated:** 2025  
+**Author:** Pratik Tayde
 
 ---
 
@@ -24,25 +26,29 @@
   - [Domain and DNS Configuration](#domain-and-dns-configuration)
   - [Application Containerisation](#application-containerisation)
   - [Container Build and Distribution](#container-build-and-distribution)
+  - [Nginx Reverse Proxy](#nginx-reverse-proxy)
   - [Container Orchestration](#container-orchestration)
   - [Public Exposure via Cloudflare Tunnel](#public-exposure-via-cloudflare-tunnel)
   - [End-to-End Traffic Flow](#end-to-end-traffic-flow)
-  - [Baseline Architecture Diagram](#baseline-architecture-diagram)
+  - [Architecture Diagram](#architecture-diagram)
   - [Architectural Decisions](#architectural-decisions)
     - [Cloudflare Tunnel over VPS-based exposure](#cloudflare-tunnel-over-vps-based-exposure)
     - [Separate ZFS pools for `tank` and `apps`](#separate-zfs-pools-for-tank-and-apps)
     - [Gunicorn over Flask development server](#gunicorn-over-flask-development-server)
     - [Docker Compose over manual `docker run`](#docker-compose-over-manual-docker-run)
     - [Docker Hub over self-hosted registry](#docker-hub-over-self-hosted-registry)
+    - [Nginx as a dedicated reverse proxy container](#nginx-as-a-dedicated-reverse-proxy-container)
   - [Current Limitations](#current-limitations)
 
 ---
 
 ## Overview
 
-Mindora is a containerised Flask service running on a self-hosted TrueNAS SCALE node behind CGNAT. The deployment is intentionally minimal — v1 exists to establish a stable, reproducible foundation before introducing additional infrastructure layers.
+Mindora is a containerised Flask service running on a self-hosted TrueNAS SCALE node behind CGNAT. v2 introduces a dedicated reverse proxy layer between the Cloudflare Tunnel connector and the application container, separating traffic routing from application execution.
 
 The constraints that shaped this architecture are real: no public IP at the router level, on-premise hardware with independent failure domains, and a requirement for the system to be fully recoverable without manual reconstruction. Every architectural decision in this document traces back to one of those constraints.
+
+**What changed in v2:** Nginx was introduced as a reverse proxy container sitting between `cloudflared` and `mindora`. The Cloudflare Tunnel service URL was updated from `mindora:5000` to `nginx:80`. The application container is no longer directly reachable from the tunnel connector.
 
 Future iterations are documented in [ROADMAP.md](./ROADMAP.md).
 
@@ -186,7 +192,7 @@ Public endpoint: `mindora.pratiktayde.com`
 
 ## Application Containerisation
 
-The application runs under Gunicorn inside a Python slim container. Worth noting: `expose` is used rather than `ports` — the container is intentionally not bound to the host network. All inbound traffic arrives through the tunnel connector on the internal Docker network.
+The application runs under Gunicorn inside a Python slim container. `expose` is used rather than `ports` — the container is intentionally not bound to the host network. In v2, all inbound traffic arrives from Nginx over the internal Docker network — the application container is no longer directly reachable from the tunnel connector.
 
 ```dockerfile
 FROM python:3.9-slim
@@ -214,7 +220,7 @@ CMD ["gunicorn", "-b", "0.0.0.0:5000", "app:app"]
 
 ## Container Build and Distribution
 
-Build pipeline at v1 is manual. Each step is run locally — automated in v4.
+Build pipeline remains manual at v2. Each step is run locally — automated in v4.
 
 ```bash
 # Build and validate locally before pushing
@@ -234,9 +240,44 @@ Registry: `pratiktayde/mindora` on Docker Hub.
 
 ---
 
+## Nginx Reverse Proxy
+
+Nginx runs as a dedicated container on the same Docker bridge network as the application. It receives all inbound requests from `cloudflared` and proxies them to the `mindora` container.
+
+Nginx configuration:
+
+```nginx
+server {
+    listen 80;
+    server_name mindora.pratiktayde.com;
+
+    location / {
+        proxy_pass http://mindora:5000;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+The proxy headers preserve the original client IP and request context — without them the application would see every request as originating from Nginx's internal IP rather than the real client.
+
+Nginx resolves `mindora` by container name via Docker DNS — the same mechanism `cloudflared` previously used to reach the application directly.
+
+Configuration file locations:
+
+```
+Repo:      infra/compose/nginx/nginx.conf
+TrueNAS:   /mnt/apps/compose/mindora/nginx/nginx.conf
+```
+
+---
+
 ## Container Orchestration
 
-Both containers share a single bridge network — `cloudflared` reaches `mindora` by container name via Docker DNS over that network.
+Three containers share a single bridge network. `cloudflared` reaches `nginx` by container name, `nginx` reaches `mindora` by container name — all resolved via Docker DNS over `appnet`.
 
 ```
 Repo:      infra/compose/docker-compose.prod.yml
@@ -253,6 +294,19 @@ services:
       - "5000"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+    networks:
+      - appnet
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: unless-stopped
+    expose:
+      - "80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - mindora
     networks:
       - appnet
 
@@ -279,15 +333,15 @@ Secrets are injected via `.env` at runtime — not stored in the Compose file or
 
 The host operates behind CGNAT — no publicly routable IP exists at the router level, making inbound port forwarding impossible without an intermediary.
 
-The tunnel connector runs as a container on the same bridge network as the application. It establishes an outbound connection to Cloudflare's edge, which Cloudflare uses to route inbound requests back to the service. The router has no open ports.
+The tunnel connector runs as a container on the same bridge network. It establishes an outbound connection to Cloudflare's edge, which Cloudflare uses to route inbound requests back to the service. The router has no open ports.
 
 ```
 Tunnel name:   mindora-tunnel
 Hostname:      mindora.pratiktayde.com
-Service URL:   mindora:5000
+Service URL:   nginx:80
 ```
 
-`cloudflared` resolves `mindora` by Docker DNS — both containers on `appnet`, container name as the upstream service URL.
+In v2 the service URL changed from `mindora:5000` to `nginx:80`. `cloudflared` now terminates at Nginx rather than the application container directly.
 
 ---
 
@@ -304,14 +358,16 @@ cloudflared container
   ↓
 Docker bridge network (appnet)
   ↓
+nginx container — reverse proxy :80
+  ↓
 mindora container — Gunicorn → Flask :5000
 ```
 
-TLS terminates at Cloudflare. Traffic between `cloudflared` and `mindora` is internal to the Docker bridge — HTTP only, never exposed outside the host.
+TLS terminates at Cloudflare. Traffic between `cloudflared` and `nginx` is internal to the Docker bridge — HTTP only. Traffic between `nginx` and `mindora` is also internal — the application container is never directly reachable from outside the bridge network.
 
 ---
 
-## Baseline Architecture Diagram
+## Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -328,9 +384,15 @@ TLS terminates at Cloudflare. Traffic between `cloudflared` and `mindora` is int
 │   │         Docker Bridge (appnet)          │       │
 │   │                                         │       │
 │   │  ┌──────────────┐  ┌─────────────────┐  │       │
-│   │  │  cloudflared │─►│    mindora      │  │       │
-│   │  │              │  │  Gunicorn :5000 │  │       │
-│   │  └──────────────┘  └─────────────────┘  │       │
+│   │  │  cloudflared │─►│     nginx       │  │       │
+│   │  │              │  │   reverse proxy │  │       │
+│   │  └──────────────┘  │      :80        │  │       │
+│   │                    └────────┬────────┘  │       │
+│   │                             │ HTTP      │       │
+│   │                    ┌────────▼────────┐  │       │
+│   │                    │    mindora      │  │       │
+│   │                    │ Gunicorn :5000  │  │       │
+│   │                    └─────────────────┘  │       │
 │   └─────────────────────────────────────────┘       │
 │                                                     │
 │   ┌──────────────────┐  ┌──────────────────┐        │
@@ -382,13 +444,22 @@ Running a registry on the NAS was considered. Docker Hub was chosen at this stag
 
 ---
 
+### Nginx as a dedicated reverse proxy container
+
+In v1, `cloudflared` routed directly to the `mindora` container. This works at single-service scale but couples routing logic to the application — adding a second service, rate limiting, or request filtering would require either modifying the app or adding Cloudflare-side rules.
+
+Nginx introduces a clean seam between the tunnel connector and the application. Routing decisions, request buffering, proxy header injection, and future rate limiting all live in Nginx config without touching the application or the Cloudflare setup. As the stack grows — additional services in v7, rate limiting in v6 — Nginx is already in place to absorb those concerns.
+
+The immediate practical value at single-service scale is low. The architectural value compounds with each subsequent version.
+
+---
+
 ## Current Limitations
 
-This baseline is intentionally minimal. The following are known gaps, each with a planned resolution:
+The following are known gaps, each with a planned resolution:
 
 | Limitation | Planned Resolution |
 |---|---|
-| No reverse proxy layer | v2 — Nginx |
 | No metrics or dashboards | v3 — Prometheus + Grafana |
 | No CI/CD pipeline | v4 — GitHub Actions |
 | No persistent volume mounts | v5 — Storage Architecture |
