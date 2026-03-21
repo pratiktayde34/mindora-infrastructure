@@ -15,7 +15,7 @@ Each version milestone represents a **meaningful infrastructure capability upgra
 | Version | Focus Area | Key Technology | Status |
 |---|---|---|---|
 | v1 | Baseline container deployment | Docker, Gunicorn, Cloudflare Tunnel | ✅ Complete |
-| v2 | Reverse proxy architecture | Nginx | 🔲 Planned |
+| v2 | Reverse proxy architecture | Nginx | ✅ Complete |
 | v3 | Infrastructure observability | Prometheus, Grafana, cAdvisor | 🔲 Planned |
 | v4 | Deployment automation | GitHub Actions, CI/CD | 🔲 Planned |
 | v5 | Persistent storage architecture | ZFS volumes, Docker mounts | 🔲 Planned |
