@@ -1,7 +1,7 @@
 # Mindora Infrastructure
 
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
-![Version](https://img.shields.io/badge/version-v2--reverse--proxy-blue)
+![Version](https://img.shields.io/badge/version-v3--observability-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 Infrastructure architecture and deployment configuration for the Mindora application.
@@ -100,6 +100,10 @@ The compose stack currently includes:
 - **mindora** — Flask application container (Gunicorn)
 - **nginx** — Reverse proxy container
 - **cloudflared** — Cloudflare Tunnel connector
+- **prometheus** — Metrics store (LAN :9090)
+- **grafana** — Dashboards (LAN :3000)
+- **node_exporter** — Host system metrics
+- **cadvisor** — Per-container metrics
 - **appnet** — Internal Docker bridge network
 
 Compose configuration (repo):
@@ -152,8 +156,10 @@ mindora-infrastructure/
 │   │   └── Dockerfile            # Container build definition
 │   └── compose/
 │       ├── docker-compose.prod.yml
-│       └── nginx/
-│           └── nginx.conf        # Nginx reverse proxy configuration
+│       ├── nginx/
+│       │   └── nginx.conf        # Nginx reverse proxy configuration
+│       └── prometheus/
+│           └── prometheus.yml    # Prometheus scrape configuration
 │
 ├── README.md                     # Project overview (this file)
 ├── ARCHITECTURE.md               # Full infrastructure architecture
@@ -208,7 +214,7 @@ The infrastructure will evolve through the following major milestones:
 |---|---|---|
 | v1 | Baseline container deployment | ✅ Complete |
 | v2 | Reverse proxy (Nginx) | ✅ Complete |
-| v3 | Observability (Prometheus + Grafana) | 🔲 Planned |
+| v3 | Observability (Prometheus + Grafana) | ✅ Complete |
 | v4 | CI/CD automation (GitHub Actions) | 🔲 Planned |
 | v5 | Persistent storage architecture | 🔲 Planned |
 | v6 | Security hardening | 🔲 Planned |

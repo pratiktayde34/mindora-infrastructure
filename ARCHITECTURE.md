@@ -1,6 +1,6 @@
 # Mindora Infrastructure — Architecture Documentation
 
-**Version:** v2 — Reverse Proxy Architecture  
+**Version:** v3 — Infrastructure Observability  
 **Last Updated:** 2025  
 **Author:** Pratik Tayde
 
@@ -27,6 +27,12 @@
   - [Application Containerisation](#application-containerisation)
   - [Container Build and Distribution](#container-build-and-distribution)
   - [Nginx Reverse Proxy](#nginx-reverse-proxy)
+  - [Observability Stack](#observability-stack)
+    - [Architecture](#architecture)
+    - [Prometheus](#prometheus)
+    - [Grafana](#grafana)
+    - [Node Exporter](#node-exporter)
+    - [cAdvisor](#cadvisor)
   - [Container Orchestration](#container-orchestration)
   - [Public Exposure via Cloudflare Tunnel](#public-exposure-via-cloudflare-tunnel)
   - [End-to-End Traffic Flow](#end-to-end-traffic-flow)
@@ -38,17 +44,19 @@
     - [Docker Compose over manual `docker run`](#docker-compose-over-manual-docker-run)
     - [Docker Hub over self-hosted registry](#docker-hub-over-self-hosted-registry)
     - [Nginx as a dedicated reverse proxy container](#nginx-as-a-dedicated-reverse-proxy-container)
+    - [Grafana and Prometheus on LAN only](#grafana-and-prometheus-on-lan-only)
+    - [Separate scrape intervals for cAdvisor](#separate-scrape-intervals-for-cadvisor)
   - [Current Limitations](#current-limitations)
 
 ---
 
 ## Overview
 
-Mindora is a containerised Flask service running on a self-hosted TrueNAS SCALE node behind CGNAT. v2 introduces a dedicated reverse proxy layer between the Cloudflare Tunnel connector and the application container, separating traffic routing from application execution.
+Mindora is a containerised Flask service running on a self-hosted TrueNAS SCALE node behind CGNAT. v3 introduces a full observability stack — Prometheus, Grafana, Node Exporter, and cAdvisor — providing visibility into host system metrics and per-container resource consumption.
 
 The constraints that shaped this architecture are real: no public IP at the router level, on-premise hardware with independent failure domains, and a requirement for the system to be fully recoverable without manual reconstruction. Every architectural decision in this document traces back to one of those constraints.
 
-**What changed in v2:** Nginx was introduced as a reverse proxy container sitting between `cloudflared` and `mindora`. The Cloudflare Tunnel service URL was updated from `mindora:5000` to `nginx:80`. The application container is no longer directly reachable from the tunnel connector.
+**What changed in v3:** Prometheus, Grafana, Node Exporter, and cAdvisor were added to the existing stack on `appnet`. Prometheus scrapes Node Exporter for host metrics and cAdvisor for container metrics on a 15-second interval. Grafana is accessible on the LAN only via port 3000 — not exposed through the Cloudflare Tunnel. Prometheus is accessible on the LAN via port 9090 for debugging.
 
 Future iterations are documented in [ROADMAP.md](./ROADMAP.md).
 
@@ -192,7 +200,7 @@ Public endpoint: `mindora.pratiktayde.com`
 
 ## Application Containerisation
 
-The application runs under Gunicorn inside a Python slim container. `expose` is used rather than `ports` — the container is intentionally not bound to the host network. In v2, all inbound traffic arrives from Nginx over the internal Docker network — the application container is no longer directly reachable from the tunnel connector.
+The application runs under Gunicorn inside a Python slim container. `expose` is used rather than `ports` — the container is intentionally not bound to the host network. All inbound traffic arrives from Nginx over the internal Docker network.
 
 ```dockerfile
 FROM python:3.9-slim
@@ -220,7 +228,7 @@ CMD ["gunicorn", "-b", "0.0.0.0:5000", "app:app"]
 
 ## Container Build and Distribution
 
-Build pipeline remains manual at v2. Each step is run locally — automated in v4.
+Build pipeline remains manual at v3. Each step is run locally — automated in v4.
 
 ```bash
 # Build and validate locally before pushing
@@ -244,12 +252,12 @@ Registry: `pratiktayde/mindora` on Docker Hub.
 
 Nginx runs as a dedicated container on the same Docker bridge network as the application. It receives all inbound requests from `cloudflared` and proxies them to the `mindora` container.
 
-Nginx configuration:
-
 ```nginx
 server {
     listen 80;
     server_name mindora.pratiktayde.com;
+
+    resolver 127.0.0.11 ipv6=off;
 
     location / {
         proxy_pass http://mindora:5000;
@@ -262,10 +270,6 @@ server {
 }
 ```
 
-The proxy headers preserve the original client IP and request context — without them the application would see every request as originating from Nginx's internal IP rather than the real client.
-
-Nginx resolves `mindora` by container name via Docker DNS — the same mechanism `cloudflared` previously used to reach the application directly.
-
 Configuration file locations:
 
 ```
@@ -275,9 +279,108 @@ TrueNAS:   /mnt/apps/compose/mindora/nginx/nginx.conf
 
 ---
 
+## Observability Stack
+
+v3 introduces four new containers that form the observability layer. All run on `appnet` alongside the existing stack.
+
+### Architecture
+
+```
+Node Exporter ──► 
+                   Prometheus ──► Grafana ──► Operator
+cAdvisor       ──►
+```
+
+Prometheus scrapes both exporters on a schedule. Grafana queries Prometheus on demand and renders dashboards.
+
+### Prometheus
+
+Time-series metrics store. Scrapes all targets on a 15-second interval and retains data for 15 days.
+
+```
+Port:      9090 (LAN accessible — bound to host)
+Image:     prom/prometheus:latest
+Storage:   prometheus_data Docker volume
+Config:    ./prometheus/prometheus.yml
+```
+
+Scrape targets:
+
+| Job | Target | Metrics |
+|---|---|---|
+| `prometheus` | `localhost:9090` | Prometheus self-metrics |
+| `node` | `node_exporter:9100` | Host system metrics |
+| `cadvisor` | `cadvisor:8080` | Per-container metrics |
+
+The `node` job uses an instance relabel to replace `node_exporter:9100` with `truenas` for readable dashboard filtering.
+
+Prometheus configuration:
+
+```yaml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: node
+    static_configs:
+      - targets: ['node_exporter:9100']
+        labels:
+          instance: truenas
+
+  - job_name: cadvisor
+    scrape_interval: 60s
+    static_configs:
+      - targets: ['cadvisor:8080']
+```
+
+cAdvisor scrape interval is set to 60s rather than the global 15s — cAdvisor is resource intensive and per-container metrics don't require 15-second granularity.
+
+### Grafana
+
+Visualisation layer. Connects to Prometheus as a data source. Accessible on the LAN only — not exposed through the Cloudflare Tunnel.
+
+```
+Port:      3000 (LAN accessible — bound to host)
+Image:     grafana/grafana:latest
+Storage:   grafana_data Docker volume
+Access:    http://192.168.1.x:3000
+```
+
+Dashboards imported from Grafana community library:
+
+| Dashboard | ID | Purpose |
+|---|---|---|
+| Node Exporter Quickstart | 13978 | Host CPU, memory, disk, network |
+| cAdvisor Exporter | 14282 | Per-container CPU, memory, network |
+
+### Node Exporter
+
+Exposes host system metrics — CPU, memory, disk IO, filesystem usage, network throughput. Runs with host PID namespace and mounts `/proc`, `/sys`, and `/` from the host to collect system-level data.
+
+```
+Port:      9100 (internal only — expose only)
+Image:     prom/node-exporter:latest
+```
+
+### cAdvisor
+
+Google's container advisor. Exposes per-container resource metrics by reading from the Docker socket and host filesystem. Runs privileged to access container runtime data.
+
+```
+Port:      8080 (internal only — expose only)
+Image:     gcr.io/cadvisor/cadvisor:latest
+```
+
+---
+
 ## Container Orchestration
 
-Three containers share a single bridge network. `cloudflared` reaches `nginx` by container name, `nginx` reaches `mindora` by container name — all resolved via Docker DNS over `appnet`.
+Seven containers share a single bridge network. All monitoring components are on `appnet` alongside the application stack.
 
 ```
 Repo:      infra/compose/docker-compose.prod.yml
@@ -320,9 +423,78 @@ services:
     networks:
       - appnet
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+    networks:
+      - appnet
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    depends_on:
+      - prometheus
+    networks:
+      - appnet
+
+  node_exporter:
+    image: prom/node-exporter:latest
+    container_name: node_exporter
+    restart: unless-stopped
+    expose:
+      - "9100"
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - appnet
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    restart: unless-stopped
+    expose:
+      - "8080"
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - appnet
+
 networks:
   appnet:
     driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
 ```
 
 Secrets are injected via `.env` at runtime — not stored in the Compose file or committed to version control.
@@ -333,15 +505,13 @@ Secrets are injected via `.env` at runtime — not stored in the Compose file or
 
 The host operates behind CGNAT — no publicly routable IP exists at the router level, making inbound port forwarding impossible without an intermediary.
 
-The tunnel connector runs as a container on the same bridge network. It establishes an outbound connection to Cloudflare's edge, which Cloudflare uses to route inbound requests back to the service. The router has no open ports.
-
 ```
 Tunnel name:   mindora-tunnel
 Hostname:      mindora.pratiktayde.com
 Service URL:   nginx:80
 ```
 
-In v2 the service URL changed from `mindora:5000` to `nginx:80`. `cloudflared` now terminates at Nginx rather than the application container directly.
+Grafana and Prometheus are intentionally not exposed through the tunnel — they contain internal infrastructure data and are accessible on the LAN only.
 
 ---
 
@@ -361,45 +531,52 @@ Docker bridge network (appnet)
 nginx container — reverse proxy :80
   ↓
 mindora container — Gunicorn → Flask :5000
-```
 
-TLS terminates at Cloudflare. Traffic between `cloudflared` and `nginx` is internal to the Docker bridge — HTTP only. Traffic between `nginx` and `mindora` is also internal — the application container is never directly reachable from outside the bridge network.
+Monitoring (LAN only):
+Node Exporter :9100 ──► Prometheus :9090 ──► Grafana :3000
+cAdvisor :8080      ──►
+```
 
 ---
 
 ## Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Public Internet                   │
-│                                                     │
-│   User ──► Cloudflare Edge (DNS + TLS + WAF)        │
-└────────────────────────┬────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Public Internet                        │
+│                                                             │
+│   User ──► Cloudflare Edge (DNS + TLS + WAF)                │
+└────────────────────────┬────────────────────────────────────┘
                          │ Cloudflare Tunnel
                          │ (outbound-initiated, no open ports)
-┌────────────────────────▼────────────────────────────┐
-│               TrueNAS SCALE Host                    │
-│                                                     │
-│   ┌─────────────────────────────────────────┐       │
-│   │         Docker Bridge (appnet)          │       │
-│   │                                         │       │
-│   │  ┌──────────────┐  ┌─────────────────┐  │       │
-│   │  │  cloudflared │─►│     nginx       │  │       │
-│   │  │              │  │   reverse proxy │  │       │
-│   │  └──────────────┘  │      :80        │  │       │
-│   │                    └────────┬────────┘  │       │
-│   │                             │ HTTP      │       │
-│   │                    ┌────────▼────────┐  │       │
-│   │                    │    mindora      │  │       │
-│   │                    │ Gunicorn :5000  │  │       │
-│   │                    └─────────────────┘  │       │
-│   └─────────────────────────────────────────┘       │
-│                                                     │
-│   ┌──────────────────┐  ┌──────────────────┐        │
-│   │   tank (mirror)  │  │   apps (SSD)     │        │
-│   │   HDD 1 + HDD 2  │  │   overlay2 + ZFS │        │
-│   └──────────────────┘  └──────────────────┘        │
-└─────────────────────────────────────────────────────┘
+┌────────────────────────▼────────────────────────────────────┐
+│                  TrueNAS SCALE Host                         │
+│                                                             │
+│   ┌──────────────────────────────────────────────────┐      │
+│   │              Docker Bridge (appnet)              │      │
+│   │                                                  │      │
+│   │  ┌─────────────┐  ┌──────────┐  ┌────────────┐   │      │
+│   │  │ cloudflared │─►│  nginx   │─►│  mindora   │   │      │
+│   │  │             │  │  :80     │  │  :5000     │   │      │
+│   │  └─────────────┘  └──────────┘  └────────────┘   │      │
+│   │                                                  │      │
+│   │  ┌─────────────┐  ┌──────────┐                   │      │
+│   │  │node_exporter│  │ cadvisor │                   │      │
+│   │  │   :9100     │  │  :8080   │                   │      │
+│   │  └──────┬──────┘  └────┬─────┘                   │      │
+│   │         └──────┬───────┘                         │      │
+│   │                ▼                                 │      │
+│   │  ┌─────────────────────┐  ┌──────────────────┐   │      │
+│   │  │  prometheus :9090   │─►│  grafana :3000   │   │      │
+│   │  │  (LAN — port 9090)  │  │  (LAN — port 3000│   │      │
+│   │  └─────────────────────┘  └──────────────────┘   │      │
+│   └──────────────────────────────────────────────────┘      │
+│                                                             │
+│   ┌──────────────────┐  ┌──────────────────┐                │
+│   │   tank (mirror)  │  │   apps (SSD)     │                │
+│   │   HDD 1 + HDD 2  │  │   overlay2 + ZFS │                │
+│   └──────────────────┘  └──────────────────┘                │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -450,7 +627,23 @@ In v1, `cloudflared` routed directly to the `mindora` container. This works at s
 
 Nginx introduces a clean seam between the tunnel connector and the application. Routing decisions, request buffering, proxy header injection, and future rate limiting all live in Nginx config without touching the application or the Cloudflare setup. As the stack grows — additional services in v7, rate limiting in v6 — Nginx is already in place to absorb those concerns.
 
-The immediate practical value at single-service scale is low. The architectural value compounds with each subsequent version.
+---
+
+### Grafana and Prometheus on LAN only
+
+Exposing Grafana publicly through the Cloudflare Tunnel was considered. Both Grafana and Prometheus are kept LAN-only for two reasons.
+
+First, they expose internal infrastructure data — host metrics, container resource consumption, and service names. This is information that should not be publicly accessible without authentication hardening that belongs in v6.
+
+Second, Cloudflare Access could protect them but adds configuration complexity outside the scope of v3. LAN access via WARP is sufficient for operational use and keeps the scope of this version focused on getting metrics flowing rather than on access control.
+
+---
+
+### Separate scrape intervals for cAdvisor
+
+cAdvisor scrapes the Docker runtime and container filesystem on every interval. At the global 15-second interval it consumes significant CPU — observed at 166-169% mean CPU usage across all cores. Container metrics don't require 15-second granularity for operational visibility.
+
+cAdvisor is configured with a 60-second scrape interval while Node Exporter and Prometheus retain the 15-second global interval. Host metrics — CPU, memory, disk IO — benefit from higher resolution for detecting spikes. Container metrics are informational at this stage.
 
 ---
 
@@ -460,12 +653,12 @@ The following are known gaps, each with a planned resolution:
 
 | Limitation | Planned Resolution |
 |---|---|
-| No metrics or dashboards | v3 — Prometheus + Grafana |
 | No CI/CD pipeline | v4 — GitHub Actions |
 | No persistent volume mounts | v5 — Storage Architecture |
 | No container privilege hardening | v6 — Security |
 | No container health checks | v6 — Security |
 | No resource limits on containers | v6 — Security |
+| Grafana and Prometheus not publicly accessible | v6 — Security (Cloudflare Access) |
 | No cloud deployment | v7 — Cloud Replication |
 | No infrastructure as code | v8 — IaC |
 

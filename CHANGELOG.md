@@ -6,6 +6,42 @@ Each entry corresponds to a version milestone defined in [ROADMAP.md](./ROADMAP.
 
 ---
 
+## [v3.0.0] — Infrastructure Observability
+
+**Status:** Complete
+
+### What changed
+
+Introduced a full observability stack — Prometheus, Grafana, Node Exporter, and cAdvisor — providing visibility into host system metrics and per-container resource consumption. All monitoring components run on `appnet` alongside the existing stack.
+
+### Infrastructure introduced
+
+- **Prometheus** — metrics store scraping all targets on a 15-second interval, 15-day retention, LAN accessible on port 9090
+- **Grafana** — visualisation layer connected to Prometheus, LAN accessible on port 3000
+- **Node Exporter** — host system metrics (CPU, memory, disk IO, network throughput, filesystem)
+- **cAdvisor** — per-container resource metrics (CPU, memory, network per container)
+- **prometheus_data** and **grafana_data** Docker volumes for persistent metric and dashboard storage
+
+### Dashboards
+
+| Dashboard | Grafana ID | Purpose |
+|---|---|---|
+| Node Exporter Quickstart | 13978 | Host system metrics |
+| cAdvisor Exporter | 14282 | Per-container metrics |
+
+### Key decisions
+
+- Grafana and Prometheus kept LAN-only — internal infrastructure data should not be publicly accessible without authentication hardening planned for v6
+- cAdvisor scrape interval set to 60s vs global 15s — cAdvisor observed at 166%+ CPU at 15s interval, container metrics don't require that granularity
+- Node Exporter job renamed to `node` in prometheus.yml and instance relabeled to `truenas` for readable dashboard variable resolution
+- Mindora app removed from scrape targets — Flask app has no `/metrics` endpoint, app-level instrumentation deferred
+
+### What was intentionally deferred
+
+CI/CD automation, persistent volume mounts, security hardening, Cloudflare Access for Grafana, and cloud deployment remain out of scope. Each is addressed in subsequent versions. See [ROADMAP.md](./ROADMAP.md).
+
+---
+
 ## [v2.0.0] — Reverse Proxy Architecture
 
 **Status:** Complete
